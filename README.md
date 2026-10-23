@@ -1,42 +1,136 @@
 # dbkit
 
-dbkit is a Terrane-native relational-database toolkit. It is not Terrane's
-canonical database layer; it starts with SQLite and is intended to grow backend
-modules for Postgres and MySQL.
+`streaky/dbkit` is a Terrane-native relational database package. It currently
+provides a real local SQLite driver behind a driver-neutral connection API; it is
+an optional package, not Terrane's canonical database layer. The package requires
+the current Terrane compiler and `build`, `filesystem`, and `threads` capabilities.
 
-`open` returns a dbkit `connection`, not SQLx's `SqliteConnection`. The native
-connection is an implementation detail held inside the backend-specific dbkit
-connection object. Applications keep and pass the dbkit connection; dbkit owns how
-its native resource is borrowed, closed, and destroyed.
+## Getting started
 
-```terrane
-from /terrane/dbkit/sqlite import config, open
+Add dbkit as a local path dependency in `package.toml`:
 
-database = await open; (instance config; 'application.db', true)
-# use database through dbkit operations
-await database.close;
+```toml
+package = "notes"
+executor = "threaded"
+rust-toolchain = "pinned"
+
+[namespaces]
+app = "src"
+
+[profile]
+name = "notes"
+capabilities = ["build", "filesystem", "threads"]
+
+[terrane-dependencies.streaky.dbkit]
+path = "../dbkit"
 ```
 
-`connection.close` is idempotent and asynchronously closes the internal native
-connection. The connection destructor delegates to the same close operation: if an
-application lets a still-open dbkit connection end its lifetime, destruction waits
-for SQLx close to complete. The application never needs the raw SQLx connection to
-release its resource.
+The basic example in `examples/basic` uses this same dependency declaration with
+`path = "../.."`. Here is a small complete program using the public
+`/streaky/dbkit` namespace:
 
-## Current scope
+```terrane
+namespace app
 
-`config`, opaque `connection` creation through `open`, and explicit `close` are
-implemented and verified. The package contains no Rust.
+from /streaky/dbkit import config, connect, connection, integer-value, text-value
 
-Statement execution and result fetching are intentionally not public yet. The
-required design is one stable dbkit connection that can execute repeatedly and be
-passed by reference to other application code. The direct projected SQLx surface
-currently cannot receive that dbkit-owned resource through the native-call boundary:
-see `docs/dump/dbkit-issue.md` for the concrete compiler repro and design notes.
+async function read-note string; database shared ref connection
+    selected = await database.prepare; 'SELECT body FROM notes WHERE id = :id'
+    selected.bind; 'id', (integer-value; 1)
+    results = await selected.query;
+    record = results.fetch;
+    if record != none
+        return (record.named; 'body').as-text;
+    return ''
+
+async function main;
+    database = await connect; (instance config; 'sqlite', ':memory:')
+    await database.execute; 'CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)'
+    await database.begin;
+    inserted = await database.prepare; 'INSERT INTO notes (id, body) VALUES (:id, :body)'
+    inserted.bind; 'id', (integer-value; 1)
+    inserted.bind; 'body', (text-value; 'hello dbkit')
+    changed = await inserted.execute;
+    print; changed.affected
+    await database.commit;
+    print; (await read-note; database)
+    await database.begin;
+    await database.execute; 'DELETE FROM notes'
+    await database.rollback;
+    print; (await read-note; database)
+    await database.close;
+```
+
+## API overview
+
+`config` selects a runtime driver (`sqlite` by default) and database path
+(`:memory:` by default). `connect` returns a shared dbkit `connection`; the
+concrete SQLx `SqliteConnection` stays private. `available-drivers` currently
+reports only `sqlite`; `postgres` and `mysql` are recognized but unavailable,
+and unknown driver names fail without a fallback. SQLx 0.9 provides the local
+SQLite runtime; remote drivers, a database-shaped Rust facade, pool, ORM, query
+builder, migration framework, and streaming cursor are not provided. Future
+drivers are not promised SQL portability.
+
+`prepare` genuinely prepares SQL through SQLx's connection-bound
+`prepare_with`; SQLx retains compiled SQLite statements in that connection's
+statement cache. dbkit owns the returned statement metadata and keeps a
+connection-bound public wrapper for reuse. `query_with` executes using the
+cached SQL text and connection; it is not an independent native statement
+handle. Use `bind` to assign a value using a name without `:`, and
+`clear-bindings` to clear assignments. Rebinding replaces the previous value.
+Repeated `:name` placeholders are accepted and each occurrence uses the same
+binding; every occurrence must have a binding before execution. Binding an
+unknown name fails, so surplus names are rejected. Only `:name` placeholders
+are supported; positional `?`, `@name`, `$name`, and PostgreSQL `::` casts
+are unsupported. Only one SQL statement may be supplied. The parser has SQLite
+quote/comment awareness, but is not a general dialect parser; see the API
+manual for exact current limits.
+
+Three narrowly typed native bridges currently adapt SQLx's safe-SQL wrapper,
+owned statement SQL metadata, and SQLite column names/ordinal indices to
+Terrane's available types. They are not a backend adapter or database facade.
+Retire them when projected borrowed native terminals and `usize` argument
+conversion can express these exact boundaries without Rust snippets.
+
+Transaction state is read from SQLite's autocommit flag while the SQLx
+connection's locked handle is held; this reflects raw transaction SQL and
+implicit rollback that SQLx transaction depth does not track. Do not infer
+transaction state from a separate counter.
+
+Database values preserve SQLite storage classes (null, int64 integer, float64
+real, text, bytes); booleans bind as integer 1/0 and read back as integers.
+Accessors are strict; there is no implicit conversion. Query results are fully
+buffered; exhaustion returns `none`, distinct from a row containing SQL NULL.
+Rows support positional and named access; missing indexes/names and ambiguous
+duplicate column names raise `database-error`.
+
+Connections and statements can be explicitly closed; destructors also release
+resources. Closing a connection rolls back an active transaction and closes
+registered statement wrappers. Nested transactions are unsupported. Buffered
+result sets survive closure. A shared connection can be passed to helpers, but
+overlapping operations are rejected as busy rather than run concurrently.
+
+Catch `database-error`, then use `error-details; failure` to read its `code`,
+`operation`, human-readable `detail`, `driver`, and `native-code`. This follows
+HTTP-server's structured throwable pattern because typed catches currently
+expose the base throwable view. Native failures are translated to a sanitized
+`database` category without SQL, paths, or bound values; native codes are
+currently unavailable. See the [structured manual](docs/src/manual.yaml) for
+the API and native integration boundaries.
 
 ## Verify
 
+With the current optimized compiler at `target/release/terrane`, run:
+
 ```console
-terrane test packages/dbkit
-terrane run packages/dbkit/examples/basic
+target/release/terrane test packages/dbkit
+target/release/terrane run packages/dbkit/examples/basic
+python packages/dbkit/tests/test_database.py --terrane target/release/terrane -v
+target/release/terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
 ```
+
+The Python suite uses only the standard library. It builds its native fixture
+once, exercises error/reuse/value/lifetime scenarios, and independently checks
+file persistence and abandoned-transaction rollback using Python's SQLite client.
+The HTTP example prints its bound URL; `GET /notes` reads seeded data through dbkit.

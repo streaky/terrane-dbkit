@@ -1,0 +1,13 @@
+package = "dbkit-integration"
+executor = "threaded"
+prelude = true
+
+[profile]
+name = "dbkit-integration"
+capabilities = ["build", "filesystem", "threads", "process"]
+
+[namespaces]
+app = "src"
+
+[terrane-dependencies.streaky.dbkit]
+path = "../../.."

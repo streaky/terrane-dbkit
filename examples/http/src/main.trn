@@ -1,0 +1,42 @@
+namespace app
+
+from /streaky/dbkit import config, connect, connection, text-value
+from /core/networking import listen-tcp
+from /generated/http-server import mount-annotated
+from /streaky/http-server/annotations import endpoint, route-group
+from /streaky/http-server import api, create-application
+from /core/errors import throwable
+from /core/process import arguments
+
+@[route-group; prefix = '/', document = false]
+class notes-api uses api
+    static database shared ref connection|none = none
+
+    @[endpoint; method = 'GET', path = '/notes', content-type = 'text/plain', summary = 'List seeded notes']
+    async function notes string throws throwable;
+        database = notes-api::database
+        if database != none
+            selected = await database.prepare; 'SELECT body FROM notes ORDER BY id LIMIT 1'
+            results = await selected.query;
+            record = results.fetch;
+            if record != none
+                return (record.named; 'body').as-text;
+        return ''
+
+async function main throws throwable;
+    database = await connect; (instance config; 'sqlite', ':memory:')
+    await database.execute; 'CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)'
+    seed = await database.prepare; 'INSERT INTO notes (id, body) VALUES (1, :body)'
+    seed.bind; 'body', (text-value; 'hello from dbkit')
+    await seed.execute;
+
+    notes-api::database = database
+    app = create-application;
+    app = mount-annotated; move app
+    address = '127.0.0.1:0'
+    supplied = arguments;
+    if supplied.length > 0
+        address = supplied[0].text
+    listener = await listen-tcp; address
+    print; 'Notes API: http://' + listener.local-address + '/notes'
+    await app.serve-listener; move listener

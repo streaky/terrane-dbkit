@@ -1,0 +1,8 @@
+namespace app
+
+from /terrane/dbkit/sqlite import config, open
+
+async function main;
+    database = await open; (instance config; ':memory:', true)
+    print; 'opened dbkit connection'
+    await database.close;

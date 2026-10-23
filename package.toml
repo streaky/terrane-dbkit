@@ -1,0 +1,27 @@
+package = "terrane/dbkit"
+artifact = "library"
+prelude = false
+executor = "threaded"
+rust-toolchain = "pinned"
+
+[profile]
+name = "dbkit"
+capabilities = ["build", "filesystem", "threads"]
+
+[namespaces]
+"terrane/dbkit/sqlite" = "src/sqlite"
+
+[rust-dependencies.sqlx-core]
+version = "=0.8.6"
+effects = ["build", "filesystem", "threads"]
+
+[rust-dependencies.sqlx-sqlite]
+version = "=0.8.6"
+features = ["bundled"]
+effects = ["build", "filesystem", "threads"]
+
+[testing]
+unit = "tests/unit"
+
+[testing.profile]
+capabilities = ["build", "filesystem", "threads"]

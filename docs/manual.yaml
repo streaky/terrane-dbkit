@@ -1,0 +1,60 @@
+format: 1
+id: package.dbkit
+kind: topic
+surface: /terrane/dbkit
+lifecycle:
+  status: current
+  stability: experimental
+  since: "0.2"
+  deprecated-since: null
+  removed-in: null
+  replacement: null
+documentation:
+  status: complete
+  title: dbkit database toolkit
+  title-style: text
+  summary: Terrane-native relational database toolkit with an opaque SQLite connection boundary.
+  tags: [database, sqlite, packages]
+  sections:
+    - id: model
+      title: Connection model
+      blocks:
+        - type: markdown
+          markdown: |-
+            dbkit is one option for relational database access, not a canonical
+            database layer. Its SQLite backend lives under `/terrane/dbkit/sqlite`,
+            with room for other SQL backends alongside it. `open` returns a dbkit
+            `connection`, not the native SqliteConnection: the backend owns that
+            native resource internally.
+    - id: lifecycle
+      title: Closing connections
+      blocks:
+        - type: markdown
+          markdown: |-
+            Call `await database.close` to explicitly close the internal native
+            connection. Close is idempotent. The dbkit connection destructor delegates
+            to the same operation, and destruction waits for its async close to finish;
+            applications do not receive a raw SqliteConnection merely to release it.
+    - id: scope
+      title: Statement execution is not yet shipped
+      blocks:
+        - type: markdown
+          markdown: |-
+            dbkit must support one stable connection that executes repeatedly and
+            can be passed by reference to another part of the application. The
+            projected SQLx boundary currently cannot lower dbkit-owned shared access
+            to the native mutable connection required by SQLx. The detailed repro,
+            attempted Terrane-native designs, and compiler-level blocking gap are
+            recorded in `docs/dump/dbkit-issue.md`.
+    - id: boundary
+      title: Native boundary
+      blocks:
+        - type: markdown
+          markdown: |-
+            All package implementation is Terrane source importing
+            `/deps/sqlx-sqlite`. The package contains no Rust and no adapter crate.
+  see-also: []
+provenance:
+  specification: []
+  conformance: []
+  compiler: null

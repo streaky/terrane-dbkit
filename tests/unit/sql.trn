@@ -54,3 +54,15 @@ function test-nul-is-rejected-without-splitting-unicode throws throwable;
     plan = compile-sql; 'SELECT \'é:literal\', :ascii, \':still_literal\''
     assert-equal-string; plan.sql, 'SELECT \'é:literal\', ?, \':still_literal\''
     assert-equal-string; plan.names[0], 'ascii'
+
+function test-comment-prefixes-remain-ordinary-operators throws throwable;
+    plan = compile-sql; 'select :amount-:discount/:divisor, -1, 1/2, -, /'
+    assert-equal-string; plan.sql, 'select ?-?/?, -1, 1/2, -, /'
+    assert-equal-int; plan.names.length, 3
+    assert-equal-string; plan.names[0], 'amount'
+    assert-equal-string; plan.names[1], 'discount'
+    assert-equal-string; plan.names[2], 'divisor'
+    assert-sql-rejected; 'multiple-statements', 'select 1; -'
+    assert-sql-rejected; 'multiple-statements', 'select 1; /'
+    assert-sql-rejected; 'multiple-statements', 'select 1; -2'
+    assert-sql-rejected; 'multiple-statements', 'select 1; /2'

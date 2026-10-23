@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refactored SQL scanner byte dispatch into a switch while preserving quote,
+  comment, parameter, and statement-termination behavior; covered ordinary
+  minus/slash characters and their rejection after a statement terminator.
+
 - Completed the SQLite runtime cutover to SQLx 0.9 while preserving the public
   `streaky/dbkit` API. SQLx owns connection-bound preparation and the compiled
   SQLite statement cache; dbkit retains owned statement metadata and executes

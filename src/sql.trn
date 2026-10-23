@@ -1,0 +1,117 @@
+namespace streaky/dbkit
+
+from /core/collections import list, range
+from /core/encodings import utf8
+from /core/errors import decode-error
+
+public class sql-plan
+    sql string = ''
+    names list of string = list
+
+    function construct; sql string, names list of string
+        this.sql = sql
+        this.names = move names
+
+private function sql-error throws database-error; code string, operation string, message string
+    throw instance database-error; code, operation, message
+
+private function sql-text string throws database-error; input bytes
+    try
+        return input.decode; utf8
+    catch decode-error
+        throw database-error; 'sql-syntax', 'prepare', 'invalid SQL text encoding'
+
+private function identifier-start bool; byte int
+    return (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or byte == 95
+
+private function identifier-part bool; byte int
+    return (identifier-start; byte) or (byte >= 48 and byte <= 57)
+
+public function compile-sql sql-plan throws database-error; source string
+    input = source.encode; utf8
+    output = ''
+    names list of string = list
+    index int = 0
+    start int = 0
+    quote int = 0
+    semicolon-seen bool = false
+    while index < input.length
+        byte = input[index]
+        if byte == 0
+            sql-error; 'sql-syntax', 'prepare', 'SQL text must not contain NUL'
+        if quote != 0
+            if byte == quote
+                if index + 1 < input.length and input[index + 1] == quote
+                    index = index + 2
+                else
+                    quote = 0
+                    index = index + 1
+            else
+                index = index + 1
+        else if byte == 39 or byte == 34 or byte == 96
+            if semicolon-seen
+                sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            quote = byte
+            index = index + 1
+        else if byte == 91
+            if semicolon-seen
+                sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            index = index + 1
+            closed bool = false
+            while index < input.length and not closed
+                if input[index] == 93
+                    if index + 1 < input.length and input[index + 1] == 93
+                        index = index + 2
+                    else
+                        closed = true
+                        index = index + 1
+                else
+                    index = index + 1
+            if not closed
+                sql-error; 'sql-syntax', 'prepare', 'unterminated quoted SQL region'
+        else if byte == 45 and index + 1 < input.length and input[index + 1] == 45
+            index = index + 2
+            while index < input.length and input[index] != 10 and input[index] != 13
+                index = index + 1
+        else if byte == 47 and index + 1 < input.length and input[index + 1] == 42
+            index = index + 2
+            closed bool = false
+            while index + 1 < input.length and not closed
+                if input[index] == 42 and input[index + 1] == 47
+                    closed = true
+                    index = index + 2
+                else
+                    index = index + 1
+            if not closed
+                sql-error; 'sql-syntax', 'prepare', 'unterminated SQL comment'
+        else if byte == 59
+            if semicolon-seen
+                sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            semicolon-seen = true
+            index = index + 1
+        else if byte == 63
+            sql-error; 'parameter-style', 'prepare', 'positional SQL parameters are not supported'
+        else if byte == 64 or byte == 36
+            sql-error; 'parameter-style', 'prepare', 'unsupported SQL parameter style'
+        else if byte == 58
+            if index + 1 < input.length and input[index + 1] == 58
+                sql-error; 'parameter-style', 'prepare', 'PostgreSQL cast syntax is not supported'
+            if index + 1 >= input.length or not (identifier-start; input[index + 1])
+                sql-error; 'sql-syntax', 'prepare', 'invalid named SQL parameter'
+            if semicolon-seen
+                sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            output = output + (sql-text; input[(range; start, index)]) + '?'
+            index = index + 2
+            name-start = index - 1
+            while index < input.length and (identifier-part; input[index])
+                index = index + 1
+            names.append; (sql-text; input[(range; name-start, index)])
+            start = index
+        else
+            if semicolon-seen and byte != 32 and byte != 9 and byte != 10 and byte != 13
+                sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            index = index + 1
+    if quote != 0
+        sql-error; 'sql-syntax', 'prepare', 'unterminated quoted SQL region'
+    output = output + (sql-text; input[(range; start, input.length)])
+    return instance sql-plan; output, names

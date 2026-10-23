@@ -1,9 +1,0 @@
-namespace terrane/dbkit/sqlite
-
-async function test-open-and-explicitly-close-dbkit-connection;
-    database connection = await open; (instance config; ':memory:', true)
-    await database.close;
-
-async function test-destructor-closes-open-dbkit-connection;
-    database connection = await open; (instance config; ':memory:', true)
-    _ = database

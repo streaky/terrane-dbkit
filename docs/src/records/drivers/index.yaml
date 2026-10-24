@@ -1,0 +1,59 @@
+format: 1
+id: dbkit.drivers
+kind: topic
+surface: null
+lifecycle:
+  status: current
+  stability: experimental
+  since: "unversioned"
+  deprecated-since: null
+  removed-in: null
+  replacement: null
+documentation:
+  status: complete
+  title: Drivers
+  title-style: text
+  summary: Runtime driver selection, current availability, and backend-specific behavior.
+  tags: [database, drivers]
+  blocks:
+    - type: markdown
+      markdown: |-
+        Applications select a driver through `config` and `connect`, while using
+        the common `/streaky/dbkit` connection, statement, value, and result types.
+        Driver-neutral access does not make SQL dialects or database configuration
+        interchangeable. See [[dbkit.api.database]] for the shared API contract.
+
+        | Driver | Configuration name | Current support | Driver reference |
+        | --- | --- | --- | --- |
+        | SQLite | `sqlite` | Implemented; local databases only | [[dbkit.drivers.sqlite]] |
+        | PostgreSQL | `postgres` | Reserved name; unavailable | [[dbkit.drivers.postgresql]] |
+        | MySQL | `mysql` | Reserved name; unavailable | [[dbkit.drivers.mysql]] |
+
+        `available-drivers` currently returns only `sqlite`. Selecting `postgres`
+        or `mysql` raises `driver-unavailable`; other unrecognized names raise
+        `unknown-driver`. There is no fallback to SQLite. A driver reference page
+        describes current support, not a commitment to ship that driver.
+  sections:
+    - id: choosing-a-driver
+      title: Choosing a driver
+      blocks:
+        - type: markdown
+          markdown: |-
+            SQLite is the only executable choice in this release and is the
+            default when constructing `config`. Consult its driver page for
+            database-path handling, connection defaults, value mapping, and
+            schema-change limitations before deploying an application.
+
+            PostgreSQL and MySQL remain later-driver extension points. Their
+            connection settings and dialect-specific behavior are not exposed by
+            the current package; their pages document that boundary rather than
+            inventing configuration or SQL-portability guarantees.
+  see-also:
+    - dbkit.api.database
+    - dbkit.drivers.sqlite
+    - dbkit.drivers.postgresql
+    - dbkit.drivers.mysql
+provenance:
+  specification: []
+  conformance: []
+  compiler: null

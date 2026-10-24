@@ -1,0 +1,24 @@
+format: 1
+publication:
+  id: dbkit
+  kind: reference
+imports: []
+title: dbkit
+landing: dbkit.guide.introduction
+navigation:
+  - group: Start here
+    numbering: none
+    children:
+      - source: records/guides/introduction.yaml
+      - source: records/tutorials/basic-database.yaml
+  - group: Reference
+    numbering: none
+    children:
+      - source: records/api/database.yaml
+  - group: Drivers
+    numbering: none
+    children:
+      - source: records/drivers/index.yaml
+      - source: records/drivers/sqlite.yaml
+      - source: records/drivers/postgresql.yaml
+      - source: records/drivers/mysql.yaml

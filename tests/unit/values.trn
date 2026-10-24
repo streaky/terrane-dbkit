@@ -1,0 +1,93 @@
+namespace streaky/dbkit
+
+from /core/collections import list
+from /core/testing import assert-equal-bool, assert-equal-int, assert-equal-string
+from /core/errors import throwable
+from /core/encodings import utf8
+
+function test-strict-values-and-null throws throwable;
+    integer = integer-value; 42
+    assert-equal-int; (integer.as-integer;), 42
+    real = real-value; 1.5
+    assert-equal-bool; (real.as-real;) == 1.5, true
+    text = text-value; ''
+    assert-equal-string; (text.as-text;), ''
+    binary = bytes-value; b''
+    data = binary.as-bytes;
+    assert-equal-int; data.length, 0
+    boolean = bool-value; true
+    assert-equal-bool; (boolean.as-bool;), true
+    empty = null-value;
+    assert-equal-bool; (empty.is-null;), true
+    assert-equal-bool; (text.is-null;), false
+    rejected bool = false
+    try
+        text.as-integer;
+    catch database-error as failure
+        rejected = true
+        assert-equal-string; (error-details; failure).code, 'conversion'
+    assert-equal-bool; rejected, true
+    rejected = false
+    try
+        empty.as-text;
+    catch database-error as failure
+        rejected = true
+        assert-equal-string; (error-details; failure).code, 'conversion'
+    assert-equal-bool; rejected, true
+
+function test-column-access-boundaries throws throwable;
+    columns = list; 'id', 'label', 'label'
+    values = list; (integer-value; 7), (text-value; 'first'), (text-value; 'second')
+    record = instance row; columns, values
+    assert-equal-int; ((record.get; 0).as-integer;), 7
+    assert-equal-string; ((record.get; 2).as-text;), 'second'
+    rejected bool = false
+    try
+        record.named; 'label'
+    catch database-error as failure
+        rejected = true
+        assert-equal-string; (error-details; failure).code, 'ambiguous-column'
+    assert-equal-bool; rejected, true
+    rejected = false
+    try
+        record.named; 'missing'
+    catch database-error as failure
+        rejected = true
+        assert-equal-string; (error-details; failure).code, 'column-not-found'
+    assert-equal-bool; rejected, true
+    for index in (list; -1, 3)
+        rejected = false
+        try
+            record.get; index
+        catch database-error as failure
+            rejected = true
+            assert-equal-string; (error-details; failure).code, 'column-not-found'
+        assert-equal-bool; rejected, true
+
+function test-result-exhaustion-is-not-sql-null throws throwable;
+    columns = list; 'value'
+    cells = list; (null-value;)
+    records = list; (instance row; columns, cells)
+    results = instance result-set; columns, records
+    fetched = results.fetch;
+    assert-equal-bool; fetched != none, true
+    if fetched != none
+        cell = fetched.get; 0
+        assert-equal-bool; (cell.is-null;), true
+    assert-equal-bool; (results.fetch;) == none, true
+    assert-equal-bool; (results.fetch;) == none, true
+
+function test-structured-error-survives-typed-catch throws throwable;
+    handled bool = false
+    message = b'quoted " text\0with nul'.decode; utf8
+    try
+        throw database-error; 'custom-code', 'custom-operation', message, 'native-123', 'example'
+    catch database-error as failure
+        handled = true
+        details = error-details; failure
+        assert-equal-string; details.code, 'custom-code'
+        assert-equal-string; details.operation, 'custom-operation'
+        assert-equal-string; details.detail, message
+        assert-equal-string; details.native-code, 'native-123'
+        assert-equal-string; details.driver, 'example'
+    assert-equal-bool; handled, true

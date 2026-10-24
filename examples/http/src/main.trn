@@ -1,0 +1,58 @@
+namespace app
+
+from /streaky/dbkit import config, connect, text-value
+from /core/networking import listen-tcp
+from /generated/http-server import mount-annotated
+from /streaky/http-server/annotations import endpoint, route-group
+from /streaky/http-server import api, create-application
+from /core/errors import throwable
+from /core/process import arguments
+
+@[route-group; prefix = '/', document = false]
+class notes-api uses api
+    static database-path string = ''
+
+    @[endpoint; method = 'GET', path = '/notes', content-type = 'text/plain', summary = 'List seeded notes']
+    async function notes string throws throwable;
+        database = await connect; (instance config; 'sqlite', notes-api::database-path)
+        try
+            selected = await database.prepare; 'SELECT body FROM notes ORDER BY id LIMIT 1'
+            try
+                results = await selected.query;
+                record = results.fetch;
+                if record != none
+                    return (record.named; 'body').as-text;
+                return ''
+            finally
+                selected.close;
+        finally
+            await database.close;
+
+async function main throws throwable;
+    address = '127.0.0.1:0'
+    database-path = 'packages/dbkit/examples/http/notes.sqlite'
+    supplied = arguments;
+    if supplied.length > 0
+        address = supplied[0].text
+    if supplied.length > 1
+        database-path = supplied[1].text
+
+    database = await connect; (instance config; 'sqlite', database-path)
+    try
+        await database.execute; 'CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)'
+        seed = await database.prepare; 'INSERT OR IGNORE INTO notes (id, body) VALUES (1, :body)'
+        try
+            seed.bind; 'body', (text-value; 'hello from dbkit')
+            await seed.execute;
+        finally
+            seed.close;
+
+        notes-api::database-path = database-path
+    finally
+        await database.close;
+
+    app = create-application;
+    app = mount-annotated; move app
+    listener = await listen-tcp; address
+    print; 'Notes API: http://' + listener.local-address + '/notes'
+    await app.serve-listener; move listener

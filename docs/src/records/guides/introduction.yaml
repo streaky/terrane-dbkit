@@ -1,0 +1,65 @@
+format: 1
+id: dbkit.guide.introduction
+kind: topic
+surface: null
+lifecycle:
+  status: current
+  stability: experimental
+  since: "unversioned"
+  deprecated-since: null
+  removed-in: null
+  replacement: null
+documentation:
+  status: complete
+  title: dbkit
+  title-style: text
+  summary: Optional Terrane-native relational database access, currently backed by local SQLite.
+  tags: [database, sqlite, getting-started]
+  blocks:
+    - type: markdown
+      markdown: |-
+        `streaky/dbkit` exposes a driver-neutral connection API with a local
+        SQLite driver. It is not Terrane's canonical database layer. Add a local
+        path dependency and grant `build`, `filesystem`, and `threads`
+        capabilities; use the current Terrane compiler and threaded executor.
+
+        The SQLite runtime uses SQLx 0.9. The concrete SQLx connection remains
+        private, and the package defines no database-shaped Rust facade. See
+        [[dbkit.api.database]] for current behavior, narrow typed native bridges,
+        and the conditions for retiring those bridges.
+        Driver availability and backend-specific behavior are documented under
+        [[dbkit.drivers]], with the current SQLite limitations on
+        [[dbkit.drivers.sqlite]].
+    - type: example
+      id: dbkit-dependency
+      title: Local package dependency
+      language: toml
+      mode: illustrative
+      target: null
+      timeout-ms: null
+      source: |-
+        package = "notes"
+        executor = "threaded"
+        rust-toolchain = "pinned"
+
+        [namespaces]
+        app = "src"
+
+        [profile]
+        name = "notes"
+        capabilities = ["build", "filesystem", "threads"]
+
+        [terrane-dependencies.streaky.dbkit]
+        path = "../dbkit"
+      response: null
+      diagnostic: null
+      markdown: null
+  sections: []
+  see-also:
+    - dbkit.tutorial.basic-database
+    - dbkit.api.database
+    - dbkit.drivers
+provenance:
+  specification: []
+  conformance: []
+  compiler: null

@@ -1,0 +1,390 @@
+namespace app
+
+from /core/process import arguments
+from /core/errors import throwable
+from /core/collections import list, range
+from /streaky/dbkit import config, connect, connection, statement, database-value, database-error, error-details, text-value, integer-value, real-value, bytes-value, bool-value, null-value
+from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
+from /app/concurrency import concurrency-scenario
+
+function report; failure throwable
+    details = error-details; failure
+    print; details.code
+
+async function scalar database-value; database shared ref connection, sql string
+    results = await database.query; sql
+    record = results.fetch;
+    if record != none
+        return record.get; 0
+    throw database-error; 'test-no-row', 'test', 'expected a row'
+
+async function helper int64; database shared ref connection
+    return (await scalar; database, 'SELECT COUNT(*) FROM items').as-integer;
+
+async function memory-scenario;
+    database = await connect; (instance config; 'sqlite', ':memory:')
+    await database.execute; 'CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT)'
+    inserted = await database.prepare; 'INSERT INTO items (id, value) VALUES (:id, :value)'
+    inserted.bind; 'id', (integer-value; 1)
+    inserted.bind; 'value', (text-value; 'safe')
+    result = await inserted.execute;
+    print; 'affected=' + result.affected
+    inserted.bind; 'id', (integer-value; 2)
+    injected = 'x\'); DROP TABLE items; --'
+    inserted.bind; 'value', (text-value; injected)
+    result = await inserted.execute;
+    print; 'rebound=' + result.affected
+    inserted.close;
+    rows = await database.query; 'SELECT value FROM items ORDER BY id'
+    first = rows.fetch;
+    if first != none
+        print; 'first=' + ((first.named; 'value').as-text;)
+    else
+        throw scenario-failure
+    second = rows.fetch;
+    if second != none
+        print; 'second=' + ((second.get; 0).as-text;)
+    else
+        throw scenario-failure
+    assert-equal-bool; (rows.fetch;) == none, true
+    print; 'helper=' + (await helper; database)
+    repeated = await database.prepare; 'SELECT :value || :value'
+    repeated.bind; 'value', (text-value; 'repeat')
+    repeated-rows = await repeated.query;
+    repeated-row = repeated-rows.fetch;
+    if repeated-row != none
+        assert-equal-string; ((repeated-row.get; 0).as-text;), 'repeatrepeat'
+    else
+        throw scenario-failure
+    await database.begin;
+    await database.execute; 'INSERT INTO items VALUES (3, \'rollback\')'
+    await database.rollback;
+    assert-equal-int; (await helper; database), 2
+    print; 'rollback=true'
+    await database.close;
+
+async function error-scenario;
+    database = await connect; (instance config;)
+    prepared = await database.prepare; 'SELECT :value'
+    try
+        await prepared.query;
+    catch database-error as failure
+        report; failure
+    try
+        prepared.bind; 'other', (null-value;)
+    catch database-error as failure
+        report; failure
+    prepared.bind; 'value', (text-value; 'bound')
+    prepared.clear-bindings;
+    try
+        await prepared.query;
+    catch database-error as failure
+        report; failure
+    try
+        await database.prepare; 'SELECT FROM'
+    catch database-error as failure
+        details = error-details; failure
+        print; details.code + ':' + details.operation
+    try
+        await database.prepare; 'SELECT 1; SELECT 2'
+    catch database-error as failure
+        report; failure
+    try
+        await database.prepare; 'SELECT ?'
+    catch database-error as failure
+        report; failure
+    await database.execute; 'CREATE TABLE unique_values (id INTEGER PRIMARY KEY, value TEXT UNIQUE)'
+    inserted = await database.prepare; 'INSERT INTO unique_values VALUES (:id, :value)'
+    inserted.bind; 'id', (integer-value; 1)
+    inserted.bind; 'value', (text-value; 'SECRET-VALUE')
+    await inserted.execute;
+    try
+        await inserted.execute;
+    catch database-error as failure
+        details = error-details; failure
+        print; details.code + ':' + details.operation
+        assert-equal-string; details.detail, 'SQLite operation failed'
+        assert-equal-string; details.native-code, ''
+    inserted.bind; 'id', (integer-value; 2)
+    inserted.bind; 'value', (text-value; 'recovered')
+    changed = await inserted.execute;
+    assert-equal-int; changed.affected, 1
+    assert-equal-int; ((await scalar; database, 'SELECT COUNT(*) FROM unique_values').as-integer;), 2
+    prepared.bind; 'value', (text-value; 'still usable')
+    rows = await prepared.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-string; ((record.get; 0).as-text;), 'still usable'
+    else
+        throw scenario-failure
+    print; 'reuse=true'
+    await database.close;
+
+async function value-scenario;
+    database = await connect; (instance config;)
+    prepared = await database.prepare; 'SELECT :minimum, :maximum, :real, :text, :bytes, :null, :bool'
+    prepared.bind; 'minimum', (integer-value; -9223372036854775808)
+    prepared.bind; 'maximum', (integer-value; 9223372036854775807)
+    prepared.bind; 'real', (real-value; 1.25)
+    prepared.bind; 'text', (text-value; '')
+    prepared.bind; 'bytes', (bytes-value; b'')
+    prepared.bind; 'null', (null-value;)
+    prepared.bind; 'bool', (bool-value; true)
+    results = await prepared.query;
+    record = results.fetch;
+    if record != none
+        print; ((record.get; 0).as-integer;)
+        print; ((record.get; 1).as-integer;)
+        assert-equal-bool; ((record.get; 2).as-real;) == 1.25, true
+        assert-equal-string; ((record.get; 3).as-text;), ''
+        data = (record.get; 4).as-bytes;
+        assert-equal-int; data.length, 0
+        assert-equal-bool; ((record.get; 5).is-null;), true
+        assert-equal-int; ((record.get; 6).as-integer;), 1
+        try
+            (record.get; 5).as-text;
+        catch database-error as failure
+            report; failure
+    else
+        throw scenario-failure
+    assert-equal-bool; (results.fetch;) == none, true
+    empty = await database.query; 'SELECT 1 WHERE 0'
+    assert-equal-bool; (empty.fetch;) == none, true
+    duplicate = await database.query; 'SELECT 1 AS value, 2 AS value'
+    selected = duplicate.fetch;
+    if selected != none
+        assert-equal-int; ((selected.get; 1).as-integer;), 2
+        try
+            selected.named; 'value'
+        catch database-error as failure
+            report; failure
+        try
+            selected.named; 'missing'
+        catch database-error as failure
+            report; failure
+        try
+            selected.get; -1
+        catch database-error as failure
+            report; failure
+        try
+            selected.get; 2
+        catch database-error as failure
+            report; failure
+    else
+        throw scenario-failure
+    print; 'values=true'
+    await database.close;
+
+async function bool-false-scenario;
+    database = await connect; (instance config;)
+    prepared = await database.prepare; 'SELECT :flag'
+    prepared.bind; 'flag', (bool-value; false)
+    rows = await prepared.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 0
+    else
+        throw scenario-failure
+    print; 'bool-false=true'
+    await database.close;
+
+async function schema-scenario; path string
+    database = await connect; (instance config; 'sqlite', path)
+    await database.execute; 'CREATE TABLE schema_test (a INTEGER, b INTEGER)'
+    await database.execute; 'INSERT INTO schema_test VALUES (1, 2)'
+    shrinking = await database.prepare; 'SELECT * FROM schema_test'
+    rows = await shrinking.query;
+    rows.fetch;
+    await database.execute; 'ALTER TABLE schema_test DROP COLUMN b'
+    rows = await shrinking.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; rows.columns.length, 1
+        assert-equal-int; ((record.get; 0).as-integer;), 1
+    else
+        throw scenario-failure
+    rows = await database.query; 'SELECT * FROM schema_test'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; rows.columns.length, 1
+        assert-equal-int; ((record.get; 0).as-integer;), 1
+    else
+        throw scenario-failure
+    await database.execute; 'ALTER TABLE schema_test ADD COLUMN c INTEGER DEFAULT 3'
+    rows = await shrinking.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; rows.columns.length, 2
+        assert-equal-int; ((record.get; 1).as-integer;), 3
+    else
+        throw scenario-failure
+    rows = await database.query; 'SELECT * FROM schema_test'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; rows.columns.length, 2
+    else
+        throw scenario-failure
+    other = await connect; (instance config; 'sqlite', path)
+    await other.execute; 'ALTER TABLE schema_test DROP COLUMN c'
+    rows = await shrinking.query;
+    assert-equal-int; rows.columns.length, 1
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 1
+    else
+        throw scenario-failure
+    await other.execute; 'ALTER TABLE schema_test ADD COLUMN external INTEGER DEFAULT 9'
+    rows = await database.query; 'SELECT * FROM schema_test'
+    assert-equal-int; rows.columns.length, 2
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 1).as-integer;), 9
+    else
+        throw scenario-failure
+    empty = await database.prepare; 'SELECT * FROM schema_test WHERE 0'
+    rows = await empty.query;
+    assert-equal-int; rows.columns.length, 2
+    assert-equal-bool; (rows.fetch;) == none, true
+    empty.close;
+    await other.close;
+    await database.close;
+async function transaction-state-scenario;
+    database = await connect; (instance config;)
+    await database.execute; 'CREATE TABLE rollback_test (value INTEGER UNIQUE ON CONFLICT ROLLBACK)'
+    await database.execute; 'BEGIN'
+    assert-equal-bool; (database.in-transaction;), true
+    await database.execute; 'INSERT INTO rollback_test VALUES (1)'
+    try
+        await database.execute; 'INSERT INTO rollback_test VALUES (1)'
+    catch database-error as failure
+        details = error-details; failure
+        print; details.code
+    assert-equal-bool; (database.in-transaction;), false
+    rows = await database.query; 'SELECT COUNT(*) FROM rollback_test'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 0
+    else
+        throw scenario-failure
+    print; 'transaction-state=true'
+    await database.close;
+
+
+async function cache-scenario;
+    database = await connect; (instance config;)
+    statements list of shared ref statement = list;
+    for index in (range; 0, 120)
+        prepared = await database.prepare; 'SELECT ' + index
+        statements.append; prepared
+    for position in (range; 0, 120)
+        prepared = statements[position]
+        rows = await prepared.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-int; ((record.get; 0).as-integer;), position
+        else
+            throw scenario-failure
+    for prepared in statements
+        prepared.close;
+    print; 'cache=true'
+    await database.close;
+
+async function lifecycle-scenario;
+    database = await connect; (instance config;)
+    other = await connect; (instance config;)
+    await database.execute; 'CREATE TABLE isolated (value TEXT)'
+    try
+        await other.query; 'SELECT * FROM isolated'
+    catch database-error as failure
+        report; failure
+    await database.begin;
+    try
+        await database.begin;
+    catch database-error as failure
+        report; failure
+    await database.rollback;
+    try
+        await database.commit;
+    catch database-error as failure
+        report; failure
+    prepared = await database.prepare; 'SELECT 42'
+    buffered = await prepared.query;
+    await database.begin;
+    await database.execute; 'INSERT INTO isolated VALUES (\'discarded\')'
+    await database.close;
+    await database.close;
+    assert-equal-bool; (database.is-open;), false
+    try
+        await prepared.query;
+    catch database-error as failure
+        report; failure
+    prepared.close;
+    prepared.close;
+    record = buffered.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 42
+    else
+        throw scenario-failure
+    print; 'buffered=true'
+    await other.close;
+
+async function file-scenario; path string
+    database = await connect; (instance config; 'sqlite', path)
+    await database.execute; 'CREATE TABLE persisted (value INTEGER)'
+    await database.begin;
+    await database.execute; 'INSERT INTO persisted VALUES (7)'
+    await database.commit;
+    await database.begin;
+    await database.execute; 'INSERT INTO persisted VALUES (8)'
+    await database.close;
+    reopened = await connect; (instance config; 'sqlite', path)
+    print; 'persisted=' + ((await scalar; reopened, 'SELECT value FROM persisted').as-integer;)
+    await reopened.close;
+
+async function abandoned-transaction; path string
+    database = await connect; (instance config; 'sqlite', path)
+    await database.execute; 'CREATE TABLE abandoned (value INTEGER)'
+    await database.begin;
+    prepared = await database.prepare; 'INSERT INTO abandoned VALUES (99)'
+    await prepared.execute;
+
+async function driver-scenario;
+    for driver in (list; 'postgres', 'mysql', 'unknown')
+        try
+            await connect; (instance config; driver)
+        catch database-error as failure
+            report; failure
+    try
+        await connect; (instance config; 'sqlite', '')
+    catch database-error as failure
+        report; failure
+
+async function main;
+    supplied = arguments;
+    mode = supplied[0].text
+    switch mode
+        case 'memory'
+            await memory-scenario;
+        case 'errors'
+            await error-scenario;
+        case 'values'
+            await value-scenario;
+        case 'lifecycle'
+            await lifecycle-scenario;
+        case 'drivers'
+            await driver-scenario;
+        case 'cancel', 'cancel-close', 'sibling', 'close'
+            await concurrency-scenario; mode
+        case 'bool-false'
+            await bool-false-scenario;
+        case 'schema'
+            await schema-scenario; supplied[1].text
+        case 'cache'
+            await cache-scenario;
+        case 'transaction-state'
+            await transaction-state-scenario;
+        case 'file'
+            await file-scenario; supplied[1].text
+        case 'abandon'
+            await abandoned-transaction; supplied[1].text
+            print; 'abandoned=true'

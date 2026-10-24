@@ -1,4 +1,4 @@
-"""Black-box dbkit behavior using the native artifact built from integration/."""
+"""Black-box dbkit behavior using the native artifact built from tests/fixtures/database."""
 from pathlib import Path
 import os
 import subprocess
@@ -88,6 +88,32 @@ class DatabaseIntegration(unittest.TestCase):
             "connection-closed", "buffered=true",
         ])
 
+
+    def test_false_boolean_binding(self):
+        self.assertEqual(self.run_app("bool-false"), ["bool-false=true"])
+
+    def test_schema_changes_refresh_prepared_and_one_shot_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.run_app("schema", Path(directory) / "schema.sqlite"), [])
+
+    def test_more_than_default_statement_cache_capacity(self):
+        self.assertEqual(self.run_app("cache"), ["cache=true"])
+
+    def test_cancelled_query_releases_connection(self):
+        self.assertEqual(self.run_app("cancel"), ["cancel=true"])
+
+    def test_close_immediately_after_cancelled_query(self):
+        self.assertEqual(self.run_app("cancel-close"), ["cancel-close=true"])
+
+    def test_busy_sibling_failure_cancels_and_drains_query(self):
+        self.assertEqual(self.run_app("sibling"), ["sibling=true"])
+
+    def test_close_and_drop_unrelated_statements_during_query(self):
+        self.assertEqual(self.run_app("close"), ["close=true"])
+
+    def test_raw_and_implicit_transaction_state(self):
+        self.assertEqual(self.run_app("transaction-state"),
+                         ["database", "transaction-state=true"])
     def test_unavailable_unknown_and_invalid_configuration(self):
         self.assertEqual(self.run_app("drivers"), [
             "driver-unavailable", "driver-unavailable", "unknown-driver",

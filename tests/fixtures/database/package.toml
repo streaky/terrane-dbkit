@@ -4,7 +4,7 @@ prelude = true
 
 [profile]
 name = "dbkit-integration"
-capabilities = ["build", "filesystem", "threads", "process"]
+capabilities = ["build", "filesystem", "threads", "process", "clocks"]
 
 [namespaces]
 app = "src"

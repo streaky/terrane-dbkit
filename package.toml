@@ -1,0 +1,39 @@
+package = "streaky/dbkit"
+artifact = "library"
+prelude = false
+executor = "threaded"
+rust-toolchain = "pinned"
+
+[profile]
+name = "dbkit"
+capabilities = ["build", "filesystem", "threads"]
+
+[namespaces]
+"streaky/dbkit" = "src"
+
+[rust-dependencies.sqlx-core]
+version = "=0.9.0"
+default-features = false
+effects = ["build", "filesystem", "threads"]
+
+[rust-dependencies.sqlx]
+version = "=0.9.0"
+default-features = false
+features = ["runtime-tokio", "sqlite"]
+effects = ["build", "filesystem", "threads"]
+
+[rust-dependencies.sqlx-sqlite]
+version = "=0.9.0"
+default-features = false
+features = ["bundled"]
+effects = ["build", "filesystem", "threads"]
+
+[rust-dependencies.libsqlite3-sys]
+version = "=0.37.0"
+effects = ["build", "filesystem", "threads"]
+
+[testing]
+unit = "tests/unit"
+
+[testing.profile]
+capabilities = ["build", "filesystem", "threads"]

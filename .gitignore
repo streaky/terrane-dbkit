@@ -1,0 +1,6 @@
+docs/dump/*
+**/.trn/
+
+# Python bytecode
+*.pyc
+__pycache__/

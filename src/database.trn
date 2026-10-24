@@ -1,0 +1,471 @@
+namespace streaky/dbkit
+
+from /core/collections import list, map
+from /core/errors import throwable
+from /deps/sqlx-core/query import query_with as native-query
+from /deps/sqlx-core/sql-str import SqlStr as native-sql
+from /deps/sqlx-sqlite import SqliteConnectOptions as native-options, SqliteConnection as native-connection, SqliteStatement as native-statement, SqliteArguments as native-arguments, SqliteRow as native-row, SqliteValue as native-value, SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
+
+public class config
+    driver string = 'sqlite'
+    database string = ':memory:'
+
+    function construct; driver string = 'sqlite', database string = ':memory:'
+        this.driver = driver
+        this.database = database
+
+public function available-drivers list of string;
+    return list; 'sqlite'
+
+private function database-failure database-error; operation string
+    return instance database-error; 'database', operation, 'SQLite operation failed'
+
+# These typed boundaries adapt borrowed metadata and ordinal native indices only.
+# Retire them when native borrowed terminals and usize arguments are expressible.
+private function checked-sql native-sql; text ref string
+    value native-sql = rust
+        ::sqlx::SqlSafeStr::into_sql_str(::sqlx::AssertSqlSafe(text.as_str()))
+    return value
+
+private function statement-sql native-sql; prepared ref native-statement
+    value native-sql = rust
+        ::sqlx::Statement::sql(prepared).clone()
+    return value
+
+private function statement-columns list of string; prepared ref native-statement
+    columns list of string = rust
+        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
+    return columns
+
+private function row-columns list of string; record ref native-row
+    columns list of string = rust
+        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
+    return columns
+
+private function read-row-value; record ref native-row, index int, value ref (native-value|none)
+    rust
+        let value = &mut *value;
+        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
+
+private function row-value native-value; record ref native-row, index int
+    value native-value|none = none
+    read-row-value; record, index, ref value
+    if value != none
+        return move value
+    throw database-error; 'column-not-found', 'read-value', 'column index is unavailable'
+
+private function value-kind string; value ref native-value
+    kind string = rust
+        ::sqlx::TypeInfo::name(::sqlx::Value::type_info(value).as_ref()).to_owned()
+    return kind
+
+# SQLx transaction depth does not track raw BEGIN/COMMIT or implicit SQLite
+# rollback. Inspect the actual connection while its worker is exclusively locked.
+private async function transaction-state bool; native ref native-connection
+    state int32 = unsafe rust
+        let native = &mut *native;
+        match native.lock_handle().await {
+            Ok(mut handle) => if libsqlite3_sys::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr()) == 0 { 1 } else { 0 },
+            Err(_) => -1,
+        }
+    if state < 0
+        throw database-failure; 'transaction-state'
+    return state == 1
+
+private function from-native database-value; value native-value
+    if value.is_null;
+        return null-value;
+    kind = value-kind; ref value
+    switch kind
+        case 'INTEGER'
+            integer int64 = value.try_decode;
+            return integer-value; integer
+        case 'REAL'
+            real float64 = value.try_decode;
+            return real-value; real
+        case 'TEXT'
+            text string = value.try_decode;
+            return text-value; text
+        case 'BLOB'
+            data bytes = value.try_decode;
+            return bytes-value; data
+    throw database-error; 'conversion', 'read-value', 'unsupported SQLite storage class'
+
+private function decode-row row; record ref native-row, columns list of string
+    cells list of database-value = list;
+    index int = 0
+    while index < columns.length
+        value = row-value; record, index
+        cells.append; (from-native; move value)
+        index = index + 1
+    return instance row; columns, cells
+
+private function bind-native; arguments ref native-arguments, value database-value
+    switch value.kind
+        case 'null'
+            absent int64|none = none
+            arguments.add; absent
+        case 'integer'
+            integer int64 = value.as-integer;
+            arguments.add; integer
+        case 'real'
+            real float64 = value.as-real;
+            arguments.add; real
+        case 'text'
+            text = value.take-text;
+            arguments.add; move text
+        case 'bytes'
+            data = value.take-bytes;
+            arguments.add; move data
+        case 'bool'
+            integer int64 = 0
+            if value.as-bool;
+                integer = 1
+            arguments.add; integer
+        case else
+            throw database-error; 'conversion', 'bind', 'unsupported database value kind'
+
+# Owned SQLx statement metadata is connection-bound by the public wrapper.
+# Non-persistent execution avoids SQLx 0.9 stale-schema column metadata.
+private class statement-slot
+    native native-statement|none = none
+    private closed bool = false
+
+    function construct; native native-statement
+        this.native = move native
+
+    mutable function take native-statement;
+        if this.closed
+            throw database-error; 'statement-closed', 'statement', 'statement is closed'
+        value = move this.native
+        if value != none
+            return move value
+        throw database-error; 'statement-closed', 'statement', 'statement is closed'
+
+    mutable function put; value native-statement
+        if not this.closed
+            this.native = move value
+
+    mutable function close;
+        this.closed = true
+        this.native = none
+
+private class sqlite-driver
+    private native native-connection|none = none
+    private statements map of int, shared ref statement-slot
+    private next-id int = 0
+    private busy bool = false
+    private transaction bool = false
+    private transaction-known bool = true
+
+    function construct; native native-connection
+        this.native = move native
+
+    function is-open bool;
+        return this.busy or this.native != none
+
+    private mutable function acquire native-connection; operation string
+        if this.busy
+            throw database-error; 'connection-busy', operation, 'connection already has an active operation'
+        native = move this.native
+        if native != none
+            this.busy = true
+            this.transaction-known = false
+            return move native
+        throw database-error; 'connection-closed', operation, 'connection is closed'
+
+    private mutable function restore; native native-connection
+        this.native = move native
+        this.busy = false
+
+
+    private mutable function register int; slot shared ref statement-slot
+        this.next-id = this.next-id + 1
+        this.statements.set; this.next-id, slot
+        return this.next-id
+
+    private mutable function unregister; id int
+        if (this.statements.get.checked; id) != none
+            this.statements.remove; id
+
+    mutable async function prepare shared ref statement; owner shared ref sqlite-driver, source string
+        plan = compile-sql; source
+        native = this.acquire; 'prepare'
+        try
+            fence-text = 'PRAGMA table_list'
+            fence-sql = checked-sql; ref fence-text
+            fence-arguments = native-arguments::default;
+            await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; ref native
+            await native.clear_cached_statements;
+            sql = checked-sql; ref plan.sql
+            types list of native-type-info = list;
+            prepared native-statement = await native.prepare_with; sql, types
+            this.transaction = await transaction-state; ref native
+            this.transaction-known = true
+            slot = shared ref (instance statement-slot; move prepared)
+            id = this.register; slot
+            return shared ref (instance statement; owner, slot, id, plan.names)
+        catch database-error as failure
+            throw failure
+        catch throwable
+            this.transaction = await transaction-state; ref native
+            this.transaction-known = true
+            throw database-failure; 'prepare'
+        finally
+            this.restore; move native
+
+    mutable async function execute execution-result; owner shared ref sqlite-driver, source string
+        prepared = await this.prepare; owner, source
+        try
+            return await prepared.execute;
+        finally
+            prepared.close;
+
+    mutable async function query result-set; owner shared ref sqlite-driver, source string
+        prepared = await this.prepare; owner, source
+        try
+            return await prepared.query;
+        finally
+            prepared.close;
+
+    mutable async function begin;
+        await this.control; 'BEGIN', 'begin'
+
+    mutable async function commit;
+        await this.control; 'COMMIT', 'commit'
+
+    mutable async function rollback;
+        await this.control; 'ROLLBACK', 'rollback'
+
+    function in-transaction bool;
+        if not this.transaction-known
+            throw database-error; 'transaction-state-unknown', 'in-transaction', 'refresh with a database operation after cancellation'
+        return this.transaction
+
+    private mutable async function control; text string, operation string
+        native = this.acquire; operation
+        try
+            this.transaction = await transaction-state; ref native
+            if operation == 'begin' and this.transaction
+                throw database-error; 'transaction-active', operation, 'nested transactions are not supported'
+            if operation != 'begin' and not this.transaction
+                throw database-error; 'no-transaction', operation, 'connection has no active transaction'
+            sql = checked-sql; ref text
+            arguments = native-arguments::default;
+            await (native-query; sql, move arguments).execute; ref native
+            this.transaction = await transaction-state; ref native
+            this.transaction-known = true
+        catch database-error as failure
+            this.transaction-known = true
+            throw failure
+        catch throwable
+            this.transaction = await transaction-state; ref native
+            this.transaction-known = true
+            throw database-failure; operation
+        finally
+            this.restore; move native
+
+    mutable async function close;
+        if not (this.is-open;)
+            return
+        native = this.acquire; 'close'
+        try
+            await native.close;
+        catch throwable
+            throw database-failure; 'close'
+        finally
+            this.finish-close;
+
+    private mutable function finish-close;
+        for id, slot in this.statements
+            slot.close;
+        empty map of int, shared ref statement-slot = map;
+        this.statements = move empty
+        this.native = none
+        this.busy = false
+        this.transaction = false
+        this.transaction-known = true
+
+    function destruct;
+        await this.close;
+
+public class connection
+    private driver shared ref sqlite-driver
+
+    private function construct; driver shared ref sqlite-driver
+        this.driver = driver
+
+    function is-open bool;
+        return this.driver.is-open;
+
+    function in-transaction bool;
+        return this.driver.in-transaction;
+
+    mutable async function prepare shared ref statement; source string
+        driver = this.driver
+        return await driver.prepare; driver, source
+
+    mutable async function execute execution-result; source string
+        driver = this.driver
+        return await driver.execute; driver, source
+
+    mutable async function query result-set; source string
+        driver = this.driver
+        return await driver.query; driver, source
+
+    mutable async function begin;
+        await this.driver.begin;
+
+    mutable async function commit;
+        await this.driver.commit;
+
+    mutable async function rollback;
+        await this.driver.rollback;
+
+    mutable async function close;
+        await this.driver.close;
+
+public class statement
+    private owner shared ref sqlite-driver
+    private slot shared ref statement-slot
+    private id int = 0
+    private names list of string
+    private bindings map of string, database-value
+    private closed bool = false
+
+    private function construct; owner shared ref sqlite-driver, slot shared ref statement-slot, id int, names list of string
+        this.owner = owner
+        this.slot = slot
+        this.id = id
+        this.names = move names
+
+    mutable function bind; name string, value database-value
+        if this.closed
+            throw database-error; 'statement-closed', 'bind', 'statement is closed'
+        if not (this.owner.is-open;)
+            throw database-error; 'connection-closed', 'bind', 'connection is closed'
+        found bool = false
+        for expected in this.names
+            if expected == name
+                found = true
+        if not found
+            throw database-error; 'unknown-parameter', 'bind', 'binding does not name a parameter in this statement'
+        this.bindings.set; name, value
+
+    mutable function clear-bindings;
+        empty map of string, database-value = map;
+        this.bindings = move empty
+
+    private function parameters native-arguments;
+        if this.closed
+            throw database-error; 'statement-closed', 'execute', 'statement is closed'
+        result = native-arguments::default;
+        try
+            for name in this.names
+                value = this.bindings.get.checked; name
+                if value != none
+                    bind-native; ref result, value
+                else
+                    throw database-error; 'missing-parameter', 'execute', 'a named parameter has no binding'
+        catch database-error as failure
+            throw failure
+        catch throwable
+            throw database-failure; 'bind'
+        return move result
+
+    mutable async function execute execution-result;
+        arguments = this.parameters;
+        owner = this.owner
+        native = owner.acquire; 'execute'
+        try
+            prepared = this.slot.take;
+            try
+                fence-text = 'PRAGMA table_list'
+                fence-sql = checked-sql; ref fence-text
+                fence-arguments = native-arguments::default;
+                await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; ref native
+                sql = statement-sql; ref prepared
+                result native-query-result = await ((native-query; sql, move arguments).persistent; false).execute; ref native
+                owner.transaction = await transaction-state; ref native
+                owner.transaction-known = true
+                affected int64 = result.rows_affected;
+                return instance execution-result; affected
+            catch database-error as failure
+                throw failure
+            catch throwable
+                owner.transaction = await transaction-state; ref native
+                owner.transaction-known = true
+                throw database-failure; 'execute'
+            finally
+                this.slot.put; move prepared
+        finally
+            owner.restore; move native
+
+    mutable async function query result-set;
+        arguments = this.parameters;
+        owner = this.owner
+        native = owner.acquire; 'query'
+        try
+            prepared = this.slot.take;
+            try
+                fence-text = 'PRAGMA table_list'
+                fence-sql = checked-sql; ref fence-text
+                fence-arguments = native-arguments::default;
+                await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; ref native
+                await native.clear_cached_statements;
+                sql = statement-sql; ref prepared
+                native-records list of native-row = await ((native-query; sql, move arguments).persistent; false).fetch_all; ref native
+                columns list of string = list;
+                if native-records.length == 0
+                    types list of native-type-info = list;
+                    current native-statement = await native.prepare_with; sql, types
+                    columns = statement-columns; ref current
+                owner.transaction = await transaction-state; ref native
+                owner.transaction-known = true
+                records list of row = list;
+                first-row bool = true
+                for record in ref native-records
+                    if first-row
+                        columns = row-columns; record
+                        first-row = false
+                    records.append; (decode-row; record, columns)
+                return instance result-set; columns, records
+            catch database-error as failure
+                throw failure
+            catch throwable
+                owner.transaction = await transaction-state; ref native
+                owner.transaction-known = true
+                throw database-failure; 'query'
+            finally
+                this.slot.put; move prepared
+        finally
+            owner.restore; move native
+
+    mutable function close;
+        if this.closed
+            return
+        this.slot.close;
+        this.owner.unregister; this.id
+        this.closed = true
+
+    function destruct;
+        this.close;
+
+public async function connect shared ref connection; settings config
+    if settings.driver == 'postgres' or settings.driver == 'mysql'
+        throw database-error; 'driver-unavailable', 'connect', 'requested driver is not included in this build', '', settings.driver
+    if settings.driver != 'sqlite'
+        throw database-error; 'unknown-driver', 'connect', 'unknown database driver', '', settings.driver
+    if settings.database == ''
+        throw database-error; 'configuration', 'connect', 'database path must not be empty'
+    try
+        options = native-options::new;
+        options = options.filename; settings.database
+        options = options.create_if_missing; true
+        native native-connection = await options.connect;
+        driver = shared ref (instance sqlite-driver; move native)
+        return shared ref (instance connection; driver)
+    catch database-error as failure
+        throw failure
+    catch throwable
+        throw database-failure; 'connect'

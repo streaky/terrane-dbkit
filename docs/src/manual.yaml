@@ -1,0 +1,17 @@
+format: 1
+publication:
+  id: dbkit
+  kind: reference
+imports: []
+title: dbkit
+landing: dbkit.guide.introduction
+navigation:
+  - group: Start here
+    numbering: none
+    children:
+      - source: records/guides/introduction.yaml
+      - source: records/tutorials/basic-database.yaml
+  - group: Reference
+    numbering: none
+    children:
+      - source: records/api/database.yaml

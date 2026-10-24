@@ -1,0 +1,102 @@
+namespace app/concurrency
+
+from /core/errors import throwable
+from /core/time import clock, duration
+from /streaky/dbkit import config, connect, connection, statement, database-error, error-details
+from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
+
+class query-state
+    started bool = false
+
+async function long-query int; prepared shared ref statement, observer shared ref query-state
+    observer.started = true
+    rows = await prepared.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 2000001000000
+        return 1
+    throw scenario-failure
+
+async function await-busy; database shared ref connection, observer shared ref query-state
+    while not observer.started
+        await clock::sleep; (duration::nanoseconds; 1000000)
+    await clock::sleep; (duration::nanoseconds; 20000000)
+    rejected = false
+    try
+        await database.query; 'SELECT 1'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'connection-busy'
+        rejected = true
+    assert-equal-bool; rejected, true
+
+async function busy-failure int; database shared ref connection
+    await database.query; 'SELECT 1'
+    throw scenario-failure
+public async function concurrency-scenario; mode string
+    database = await connect; (instance config;)
+    heavy = await database.prepare; 'WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 2000000) SELECT SUM(x) FROM n'
+    other = await database.prepare; 'SELECT 2'
+    abandoned shared ref statement|none = await database.prepare; 'SELECT 3'
+    assert-equal-bool; abandoned != none, true
+    observer = shared ref (instance query-state;)
+    group = task-group; int
+    group.spawn; (long-query; heavy, observer)
+    try
+        await await-busy; database, observer
+        other.close;
+        abandoned = none
+        assert-equal-bool; abandoned == none, true
+        closed = false
+        try
+            await other.query;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'statement-closed'
+            closed = true
+        assert-equal-bool; closed, true
+        if mode == 'sibling'
+            group.spawn; (busy-failure; database)
+        else
+            heavy.close;
+            if mode == 'cancel' or mode == 'cancel-close'
+                group.cancel;
+    finally
+        outcomes = await group.drain;
+        if mode == 'close'
+            assert-equal-bool; outcomes[0].completed, true
+        else
+            assert-equal-bool; outcomes[0].cancelled, true
+        if mode == 'sibling'
+            sibling-error = outcomes[1].error
+            if sibling-error != none
+                assert-equal-string; (error-details; sibling-error).code, 'connection-busy'
+            else
+                throw scenario-failure
+    if mode != 'close'
+        unknown = false
+        try
+            database.in-transaction;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'transaction-state-unknown'
+            unknown = true
+        assert-equal-bool; unknown, true
+    if mode != 'sibling'
+        rejected = false
+        try
+            await heavy.query;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'statement-closed'
+            rejected = true
+        assert-equal-bool; rejected, true
+    if mode == 'cancel-close'
+        await database.close;
+        print; mode + '=true'
+        return
+    rows = await database.query; 'SELECT 7'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 7
+    else
+        throw scenario-failure
+    heavy.close;
+    await database.close;
+    print; mode + '=true'

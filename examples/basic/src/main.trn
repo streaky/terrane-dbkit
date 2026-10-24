@@ -1,0 +1,29 @@
+namespace app
+
+from /streaky/dbkit import config, connect, connection, text-value, integer-value
+
+async function read-note string; database shared ref connection
+    selected = await database.prepare; 'SELECT body FROM notes WHERE id = :id'
+    selected.bind; 'id', (integer-value; 1)
+    results = await selected.query;
+    record = results.fetch;
+    if record != none
+        return (record.named; 'body').as-text;
+    return ''
+
+async function main;
+    database = await connect; (instance config; 'sqlite', ':memory:')
+    await database.execute; 'CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)'
+    await database.begin;
+    inserted = await database.prepare; 'INSERT INTO notes (id, body) VALUES (:id, :body)'
+    inserted.bind; 'id', (integer-value; 1)
+    inserted.bind; 'body', (text-value; 'hello dbkit')
+    changed = await inserted.execute;
+    print; changed.affected
+    await database.commit;
+    print; (await read-note; database)
+    await database.begin;
+    await database.execute; 'DELETE FROM notes'
+    await database.rollback;
+    print; (await read-note; database)
+    await database.close;

@@ -1,0 +1,170 @@
+namespace streaky/dbkit
+
+from /core/collections import list
+from /core/errors import throwable, coercion-error
+from /core/documents import document-value, make-document-string
+from /core/documents/json import canonical-json, parse-json, default-json-options
+
+# Like HTTP-server's throwable boundary, retain structured data in message until
+# typed catches preserve source payloads (dbkit/typed-catch-fields).
+private function error-string string; value string
+    encoded = canonical-json; (make-document-string; value)
+    if encoded.failed
+        throw coercion-error
+    return encoded.value.encoded
+
+public class database-error implements throwable
+    code string = ''
+    operation string = ''
+    message string = ''
+    detail string = ''
+    driver string = 'sqlite'
+    native-code string = ''
+
+    function construct; code string, operation string, message string, native-code string = '', driver string = 'sqlite'
+        this.code = code
+        this.operation = operation
+        this.detail = message
+        this.native-code = native-code
+        this.driver = driver
+        this.message = '{"dbkit":1,"code":' + (error-string; code) + ',"operation":' + (error-string; operation) + ',"detail":' + (error-string; message) + ',"native-code":' + (error-string; native-code) + ',"driver":' + (error-string; driver) + '}'
+
+    function render string;
+        return this.operation + ': ' + this.detail + ' [' + this.code + ']'
+
+private function error-field string; value document-value, key string
+    field = value.field; key
+    if field.failed or field.value.kind != 'string'
+        throw coercion-error
+    return field.value.scalar
+
+public function error-details database-error; error throwable
+    parsed = parse-json; error.message, (default-json-options;)
+    if parsed.failed
+        throw coercion-error
+    version = parsed.value.field; 'dbkit'
+    if version.failed or version.value.kind != 'integer' or version.value.scalar != '1'
+        throw coercion-error
+    return instance database-error; (error-field; parsed.value, 'code'), (error-field; parsed.value, 'operation'), (error-field; parsed.value, 'detail'), (error-field; parsed.value, 'native-code'), (error-field; parsed.value, 'driver')
+
+public class database-value
+    kind string = 'null'
+    private integer int64 = 0
+    private real float64 = 0.0
+    private text string = ''
+    private data bytes = b''
+    private boolean bool = false
+
+    private function construct; kind string = 'null', integer int64 = 0, real float64 = 0.0, text string = '', data bytes = b'', boolean bool = false
+        this.kind = kind
+        this.integer = integer
+        this.real = real
+        this.text = text
+        this.data = data
+        this.boolean = boolean
+
+    function is-null bool;
+        return this.kind == 'null'
+
+    function as-integer int64 throws database-error;
+        if this.kind != 'integer'
+            throw database-error; 'conversion', 'read-value', 'database value is not an integer'
+        return this.integer
+
+    function as-real float64 throws database-error;
+        if this.kind != 'real'
+            throw database-error; 'conversion', 'read-value', 'database value is not a real'
+        return this.real
+
+    function as-text string throws database-error;
+        if this.kind != 'text'
+            throw database-error; 'conversion', 'read-value', 'database value is not text'
+        return this.text
+
+    function as-bytes bytes throws database-error;
+        if this.kind != 'bytes'
+            throw database-error; 'conversion', 'read-value', 'database value is not bytes'
+        return this.data
+
+    private consuming function take-text string;
+        if this.kind != 'text'
+            throw database-error; 'conversion', 'bind', 'database value is not text'
+        return move this.text
+
+    private consuming function take-bytes bytes;
+        if this.kind != 'bytes'
+            throw database-error; 'conversion', 'bind', 'database value is not bytes'
+        return move this.data
+
+    function as-bool bool throws database-error;
+        if this.kind != 'bool'
+            throw database-error; 'conversion', 'read-value', 'database value is not a boolean'
+        return this.boolean
+
+public function null-value database-value;
+    return instance database-value;
+
+public function integer-value database-value; input int64
+    return instance database-value; 'integer', input
+
+public function real-value database-value; input float64
+    return instance database-value; 'real', 0, input
+
+public function text-value database-value; input string
+    return instance database-value; 'text', 0, 0.0, input
+
+public function bytes-value database-value; input bytes
+    return instance database-value; 'bytes', 0, 0.0, '', input
+
+public function bool-value database-value; input bool
+    return instance database-value; 'bool', 0, 0.0, '', b'', input
+
+public class row
+    columns list of string = list
+    private values list of database-value = list
+
+    function construct; columns list of string, values list of database-value
+        if columns.length != values.length
+            throw database-error; 'row-shape', 'read-row', 'column and value counts differ'
+        this.columns = move columns
+        this.values = move values
+
+    function get database-value throws database-error; index int
+        if index < 0 or index >= this.values.length
+            throw database-error; 'column-not-found', 'read-row', 'column index is out of range'
+        return this.values[index]
+
+    function named database-value throws database-error; name string
+        found int = -1
+        index int = 0
+        while index < this.columns.length
+            if this.columns[index] == name
+                if found != -1
+                    throw database-error; 'ambiguous-column', 'read-row', 'column name is ambiguous'
+                found = index
+            index = index + 1
+        if found == -1
+            throw database-error; 'column-not-found', 'read-row', 'column name was not found'
+        return this.values[found]
+
+public class result-set
+    columns list of string = list
+    private rows list of row = list
+    private position int = 0
+
+    function construct; columns list of string, rows list of row
+        this.columns = move columns
+        this.rows = move rows
+
+    mutable function fetch row|none;
+        if this.position >= this.rows.length
+            return none
+        value = this.rows[this.position]
+        this.position = this.position + 1
+        return value
+
+public class execution-result
+    affected int64 = 0
+
+    function construct; affected int64
+        this.affected = affected

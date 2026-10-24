@@ -1,0 +1,20 @@
+package = "dbkit-http-example"
+artifact = "executable"
+executor = "threaded"
+prelude = true
+
+[namespaces]
+app = "src"
+
+[terrane-dependencies.streaky.dbkit]
+path = "../.."
+
+[terrane-dependencies.streaky.http-server]
+path = "../../../http-server"
+
+[consumers.http]
+tool = "streaky/http-server::http"
+declarations = [
+  "/app::notes-api",
+  "/app::notes-api::notes",
+]

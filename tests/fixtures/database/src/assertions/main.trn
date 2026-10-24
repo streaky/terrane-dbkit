@@ -1,0 +1,21 @@
+namespace app/assertions
+
+from /core/errors import throwable
+
+public class scenario-failure implements throwable
+    message string = 'database scenario assertion failed'
+
+    function render string;
+        return this.message
+
+public function assert-equal-int; actual int, expected int
+    if actual != expected
+        throw scenario-failure
+
+public function assert-equal-string; actual string, expected string
+    if actual != expected
+        throw scenario-failure
+
+public function assert-equal-bool; actual bool, expected bool
+    if actual != expected
+        throw scenario-failure

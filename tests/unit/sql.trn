@@ -1,0 +1,80 @@
+namespace streaky/dbkit
+
+from /core/testing import assert-equal-bool, assert-equal-int, assert-equal-string
+from /core/errors import throwable
+from /core/encodings import utf8
+
+function test-named-parameters-preserve-occurrence-order throws throwable;
+    plan = compile-sql; 'select :first, :second, :first'
+    assert-equal-string; plan.sql, 'select ?, ?, ?'
+    assert-equal-int; plan.names.length, 3
+    assert-equal-string; plan.names[0], 'first'
+    assert-equal-string; plan.names[1], 'second'
+    assert-equal-string; plan.names[2], 'first'
+
+function test-literals-identifiers-and-comments-remain-untouched throws throwable;
+    source = 'select \' :single \'\' quote\', " :double "" quote", `:tick``name`, [ :bracket ], :value -- :line ?\n/* :block ? */'
+    plan = compile-sql; source
+    assert-equal-string; plan.sql, 'select \' :single \'\' quote\', " :double "" quote", `:tick``name`, [ :bracket ], ? -- :line ?\n/* :block ? */'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'value'
+
+function test-bracket-identifier-ends-at-first-close throws throwable;
+    plan = compile-sql; 'SELECT [a]], :p ]'
+    assert-equal-string; plan.sql, 'SELECT [a]], ? ]'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'p'
+
+function assert-sql-rejected throws throwable; code string, source string
+    rejected bool = false
+    try
+        compile-sql; source
+    catch database-error as failure
+        rejected = true
+        assert-equal-string; (error-details; failure).code, code
+    assert-equal-bool; rejected, true
+
+function test-invalid-and-mixed-parameter-styles-are-rejected throws throwable;
+    assert-sql-rejected; 'parameter-style', 'select ?'
+    assert-sql-rejected; 'parameter-style', 'select ?12'
+    assert-sql-rejected; 'parameter-style', 'select @value'
+    assert-sql-rejected; 'parameter-style', 'select $value'
+    assert-sql-rejected; 'parameter-style', 'select value::text'
+    assert-sql-rejected; 'sql-syntax', 'select :'
+    assert-sql-rejected; 'sql-syntax', 'select :9name'
+    plan = compile-sql; 'select :name-part'
+    assert-equal-string; plan.sql, 'select ?-part'
+
+function test-statement-termination-and-unclosed-regions throws throwable;
+    plan = compile-sql; 'select \'a;b\'; -- trailing ;\n/* trailing */'
+    assert-equal-string; plan.sql, 'select \'a;b\'; -- trailing ;\n/* trailing */'
+    assert-sql-rejected; 'multiple-statements', 'select 1; select 2'
+    assert-sql-rejected; 'multiple-statements', 'select 1;; -- trailing'
+    assert-sql-rejected; 'sql-syntax', 'select \'unterminated'
+    assert-sql-rejected; 'sql-syntax', 'select /* unterminated'
+    assert-sql-rejected; 'sql-syntax', 'select [unterminated'
+
+function test-form-feed-is-allowed-after-terminator throws throwable;
+    source = b'SELECT 1;\x0c'.decode; utf8
+    plan = compile-sql; source
+
+    assert-equal-string; plan.sql, source
+
+function test-nul-is-rejected-without-splitting-unicode throws throwable;
+    source = b'SELECT 1\0ignored'.decode; utf8
+    assert-sql-rejected; 'sql-syntax', source
+    plan = compile-sql; 'SELECT \'é:literal\', :ascii, \':still_literal\''
+    assert-equal-string; plan.sql, 'SELECT \'é:literal\', ?, \':still_literal\''
+    assert-equal-string; plan.names[0], 'ascii'
+
+function test-comment-prefixes-remain-ordinary-operators throws throwable;
+    plan = compile-sql; 'select :amount-:discount/:divisor, -1, 1/2, -, /'
+    assert-equal-string; plan.sql, 'select ?-?/?, -1, 1/2, -, /'
+    assert-equal-int; plan.names.length, 3
+    assert-equal-string; plan.names[0], 'amount'
+    assert-equal-string; plan.names[1], 'discount'
+    assert-equal-string; plan.names[2], 'divisor'
+    assert-sql-rejected; 'multiple-statements', 'select 1; -'
+    assert-sql-rejected; 'multiple-statements', 'select 1; /'
+    assert-sql-rejected; 'multiple-statements', 'select 1; -2'
+    assert-sql-rejected; 'multiple-statements', 'select 1; /2'

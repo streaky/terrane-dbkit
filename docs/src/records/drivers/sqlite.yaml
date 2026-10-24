@@ -1,0 +1,111 @@
+format: 1
+id: dbkit.drivers.sqlite
+kind: topic
+surface: null
+lifecycle:
+  status: current
+  stability: experimental
+  since: "unversioned"
+  deprecated-since: null
+  removed-in: null
+  replacement: null
+documentation:
+  status: complete
+  title: SQLite
+  title-style: text
+  summary: Local SQLite configuration, SQLx defaults, value mapping, and schema-change precautions.
+  tags: [database, drivers, sqlite]
+  blocks:
+    - type: markdown
+      markdown: |-
+        Select `sqlite` through the common dbkit configuration. This driver uses
+        SQLx 0.9's concrete SQLite connection behind the public dbkit API. It opens
+        local databases only; remote libSQL transports, connection pooling, and a
+        migration scheduler are not provided. See [[dbkit.drivers]] for driver
+        availability and [[dbkit.api.database]] for operations and resource lifetimes.
+  sections:
+    - id: configuration
+      title: Configuration and defaults
+      blocks:
+        - type: markdown
+          markdown: |-
+            `config.database` defaults to `:memory:`. Each connection to that name
+            owns a separate in-memory database. A nonempty filesystem path opens
+            or creates a database; its parent directory must already exist. The
+            setting is a path, not a portable DSN. Read-only modes and SQLite URI
+            options are not exposed.
+
+            SQLx enables foreign-key enforcement (`foreign_keys=1`) and sets a
+            5000 ms busy timeout by default. These differ from plain SQLite's
+            default connection settings: foreign keys are enforced, and database
+            lock contention waits up to five seconds before failing. The timeout
+            neither queues competing operations on one dbkit handle nor protects
+            against the schema-change issue described below.
+
+            A shared dbkit connection allows one operation at a time; overlapping
+            callers receive `connection-busy`. Concurrent handlers can use
+            independent connections to the same file, as the HTTP example does.
+            Independent connections still share SQLite's file-locking constraints.
+    - id: values-and-sql
+      title: Values and SQL
+      blocks:
+        - type: markdown
+          markdown: |-
+            Results preserve SQLite storage classes: null, signed 64-bit integer,
+            64-bit real, text, and bytes. Boolean parameters bind as integer 1 or 0
+            and read back as integers, not a distinct SQLite boolean storage class.
+            Dbkit's strict accessors do not add implicit text or numeric coercions.
+
+            Named parameters use dbkit's `:name` contract and SQLite-aware scanning.
+            Only one statement is accepted per operation; scripts, positional
+            placeholders, and other drivers' placeholder syntax are not accepted.
+            The exact binding and scanning rules remain in [[dbkit.api.database]].
+    - id: schema-changes
+      title: Schema changes and SQLx column metadata
+      blocks:
+        - type: markdown
+          markdown: |-
+            SQLx's SQLite integration can retain column metadata from before an
+            `ALTER TABLE`. Upstream context is recorded in
+            [SQLx issue #2517, “SQLite: Alter table column error”](https://github.com/transact-rs/sqlx/issues/2517),
+            first reported in May 2023. The report describes stale column names,
+            and a later comment reports an index-out-of-bounds panic after adding
+            a column. This is a SQLx/SQLite integration limitation, not a general
+            claim that SQLite schema changes are unsafe.
+
+            Dbkit's sequential schema-change regressions pass with its current
+            workaround: refresh SQLite schema state before native work, clear
+            cached preparation metadata, use non-persistent SQLx execution, and
+            derive result columns again. This sacrifices compiled execution-cache
+            reuse, not reuse of dbkit statement wrappers and bindings. It covers
+            tested changes on the same connection and changes committed by another
+            connection between queries.
+
+            Concurrent schema changes remain unsafe. If another connection commits
+            DDL while a query is executing, SQLite can re-prepare its statement
+            during execution while SQLx retains the earlier column snapshot. Dbkit
+            has reproduced an uncatchable panic that can abort the process or kill
+            the connection worker and potentially leave the database locked. This
+            is not reported as a catchable `database-error`.
+
+            Coordinate migrations across all database users and drain active queries
+            before changing the schema. Cache clearing, non-persistent execution,
+            the busy timeout, and catching database errors do not make concurrent
+            DDL safe. The concurrent mid-execution case is distinct from the
+            sequential cache case described in #2517; that issue is context, not
+            evidence that the current dbkit race has an upstream fix.
+
+            Restore persistent execution only after adopting an upstream fix that
+            refreshes column metadata following SQLite's mid-execution reprepare.
+            Verification must include concurrent cross-connection column shrink/grow
+            regressions, as well as sequential same- and other-connection changes.
+            An upstream version change or passing between-query tests alone is not
+            sufficient evidence to remove the workaround.
+  see-also:
+    - dbkit.drivers
+    - dbkit.api.database
+    - dbkit.tutorial.basic-database
+provenance:
+  specification: []
+  conformance: []
+  compiler: null

@@ -27,6 +27,9 @@ documentation:
         private, and the package defines no database-shaped Rust facade. See
         [[dbkit.api.database]] for current behavior, narrow typed native bridges,
         and the conditions for retiring those bridges.
+        Driver availability and backend-specific behavior are documented under
+        [[dbkit.drivers]], with the current SQLite limitations on
+        [[dbkit.drivers.sqlite]].
     - type: example
       id: dbkit-dependency
       title: Local package dependency
@@ -55,6 +58,7 @@ documentation:
   see-also:
     - dbkit.tutorial.basic-database
     - dbkit.api.database
+    - dbkit.drivers
 provenance:
   specification: []
   conformance: []

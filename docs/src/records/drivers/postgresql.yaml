@@ -1,0 +1,40 @@
+format: 1
+id: dbkit.drivers.postgresql
+kind: topic
+surface: null
+lifecycle:
+  status: current
+  stability: experimental
+  since: "unversioned"
+  deprecated-since: null
+  removed-in: null
+  replacement: null
+documentation:
+  status: complete
+  title: PostgreSQL
+  title-style: text
+  summary: The reserved PostgreSQL driver name and its current unavailability.
+  tags: [database, drivers, postgresql]
+  blocks:
+    - type: markdown
+      markdown: |-
+        PostgreSQL is not implemented in the current dbkit release. The reserved
+        configuration name is `postgres`, not `postgresql`. Selecting it raises
+        `driver-unavailable` before a connection is opened; it is not included in
+        `available-drivers` and does not fall back to SQLite.
+
+        No PostgreSQL DSN, credentials, transport, TLS, pooling, value mapping, or
+        placeholder-translation contract is exposed. This page records current
+        availability, not a simulated driver or a committed implementation plan.
+        Do not infer PostgreSQL behavior from the SQLite driver's settings or SQL
+        scanner. See [[dbkit.drivers]] for the support matrix and
+        [[dbkit.drivers.sqlite]] for the implemented driver.
+  sections: []
+  see-also:
+    - dbkit.drivers
+    - dbkit.api.database
+    - dbkit.drivers.sqlite
+provenance:
+  specification: []
+  conformance: []
+  compiler: null

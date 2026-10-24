@@ -72,14 +72,14 @@ SQLite runtime; remote drivers, a database-shaped Rust facade, pool, ORM, query
 builder, migration framework, and streaming cursor are not provided. Future
 drivers are not promised SQL portability.
 
+See the [Drivers overview](docs/src/records/drivers/index.yaml) for separate SQLite,
+PostgreSQL, and MySQL reference pages and their current availability.
+
 `prepare` genuinely prepares SQL through SQLx's connection-bound `prepare_with`.
 dbkit retains owned SQL metadata and reusable bindings, not an independent native
-statement handle. A fixed schema-refresh operation runs before native work,
-cached metadata is cleared before preparation, and execution uses non-persistent
-SQLx queries to avoid SQLx 0.9's schema-change column-cache panic. This currently
-sacrifices compiled execution-cache reuse, not public statement reuse. Coordinate
-concurrent schema migrations with active queries. See the manual for the
-conditions for restoring persistence.
+statement handle. See the driver reference for backend-specific behavior and
+limitations.
+
 Use `bind` to assign a value using a name without `:`, and
 `clear-bindings` to clear assignments. Rebinding replaces the previous value.
 Repeated `:name` placeholders are accepted and each occurrence uses the same

@@ -29,13 +29,10 @@ documentation:
         - type: markdown
           markdown: |-
             `config` takes `driver string = 'sqlite'` and
-            `database string = ':memory:'`. A nonempty filesystem path opens or
-            creates a SQLite database; its parent directory must already exist.
-            Database paths are not portable DSNs. Credentials, pools, remote
-            transports, read-only options, and URI configuration are not exposed.
-            SQLx configures SQLite with `foreign_keys=1` and
-            `busy_timeout=5000` by default; foreign-key constraints are enforced,
-            and lock contention waits up to five seconds before reporting failure.
+            `database string = ':memory:'`. The database setting is interpreted
+            by the selected driver, not as a portable DSN. See [[dbkit.drivers]]
+            for availability and [[dbkit.drivers.sqlite]] for SQLite path handling,
+            connection defaults, value mapping, and known limitations.
             | Entry point | Contract |
             | --- | --- |
             | `available-drivers` | Returns a list containing `sqlite`. |
@@ -49,13 +46,10 @@ documentation:
 
             `postgres` and `mysql` are reserved but return `driver-unavailable`;
             other unknown names return `unknown-driver`. There is no fallback.
-            Separate connections are independent, including separate in-memory
-            databases. Application helpers receive the same shared handle.
-            Sharing one connection does not serialize callers: overlapping
-            operations on it fail with `connection-busy`. For concurrent request
-            handlers, use independent connections to a shared file when that
-            storage model fits; lock contention can still occur, governed by
-            SQLite's busy timeout.
+            Application helpers receive the same shared handle. Sharing one
+            connection does not serialize callers: overlapping operations on it
+            fail with `connection-busy`. Independent connections and their locking
+            behavior are described by the selected driver's reference page.
     - id: statements
       title: Preparation and named bindings
       blocks:
@@ -85,18 +79,13 @@ documentation:
 
             Preparation calls SQLx's connection-bound `prepare_with`; dbkit owns
             reusable SQL metadata, not an independent native statement handle.
-            Before preparation or execution, a fixed `PRAGMA table_list` operation
-            makes SQLite refresh externally changed schema state. Before preparing
-            metadata, dbkit also clears SQLx's cached statements. Queries derive
-            column names again and decode against actual row metadata, rather than
-            retaining prepare-time shape. Applications must coordinate concurrent
-            schema migrations with active queries; this is not a DDL scheduling API.
-            Execution uses non-persistent SQLx `query_with` statements to avoid
-            SQLx 0.9's stale-column cache panic after schema changes, including
-            externally changed schemas. This deliberately gives up compiled
-            execution-cache reuse; public bindings and wrappers remain reusable.
-            Re-enable persistence only after an upstream fix passes shrink/grow
-            regressions, including changes made through another connection.
+            The SQLite driver currently gives up compiled execution-cache reuse
+            to avoid sequential schema-change metadata failures. Concurrent DDL
+            can still cause an uncatchable panic or a dead connection worker;
+            applications must coordinate migrations with active queries. See
+            [[dbkit.drivers.sqlite#schema-changes]] for the SQLx #2517 context,
+            current workaround, consequences, and conditions for restoring
+            persistence. Reusing dbkit statement wrappers and bindings is supported.
 
             The SQLite-aware scanner rewrites named occurrences to positional
             native bindings. It preserves single/double/backtick quotes with
@@ -283,6 +272,8 @@ documentation:
   see-also:
     - dbkit.guide.introduction
     - dbkit.tutorial.basic-database
+    - dbkit.drivers
+    - dbkit.drivers.sqlite
 provenance:
   specification: []
   conformance: []

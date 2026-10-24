@@ -62,11 +62,8 @@ public function compile-sql sql-plan throws database-error; source string
                     closed bool = false
                     while index < input.length and not closed
                         if input[index] == 93
-                            if index + 1 < input.length and input[index + 1] == 93
-                                index = index + 2
-                            else
-                                closed = true
-                                index = index + 1
+                            closed = true
+                            index = index + 1
                         else
                             index = index + 1
                     if not closed
@@ -120,7 +117,7 @@ public function compile-sql sql-plan throws database-error; source string
                     names.append; (sql-text; input[(range; name-start, index)])
                     start = index
                 case else
-                    if semicolon-seen and byte != 32 and byte != 9 and byte != 10 and byte != 13
+                    if semicolon-seen and byte != 32 and byte != 9 and byte != 10 and byte != 12 and byte != 13
                         sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
                     index = index + 1
     if quote != 0

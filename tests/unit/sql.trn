@@ -19,6 +19,12 @@ function test-literals-identifiers-and-comments-remain-untouched throws throwabl
     assert-equal-int; plan.names.length, 1
     assert-equal-string; plan.names[0], 'value'
 
+function test-bracket-identifier-ends-at-first-close throws throwable;
+    plan = compile-sql; 'SELECT [a]], :p ]'
+    assert-equal-string; plan.sql, 'SELECT [a]], ? ]'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'p'
+
 function assert-sql-rejected throws throwable; code string, source string
     rejected bool = false
     try
@@ -47,6 +53,12 @@ function test-statement-termination-and-unclosed-regions throws throwable;
     assert-sql-rejected; 'sql-syntax', 'select \'unterminated'
     assert-sql-rejected; 'sql-syntax', 'select /* unterminated'
     assert-sql-rejected; 'sql-syntax', 'select [unterminated'
+
+function test-form-feed-is-allowed-after-terminator throws throwable;
+    source = b'SELECT 1;\x0c'.decode; utf8
+    plan = compile-sql; source
+
+    assert-equal-string; plan.sql, source
 
 function test-nul-is-rejected-without-splitting-unicode throws throwable;
     source = b'SELECT 1\0ignored'.decode; utf8

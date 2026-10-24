@@ -72,12 +72,15 @@ SQLite runtime; remote drivers, a database-shaped Rust facade, pool, ORM, query
 builder, migration framework, and streaming cursor are not provided. Future
 drivers are not promised SQL portability.
 
-`prepare` genuinely prepares SQL through SQLx's connection-bound
-`prepare_with`; SQLx retains compiled SQLite statements in that connection's
-statement cache. dbkit owns the returned statement metadata and keeps a
-connection-bound public wrapper for reuse. `query_with` executes using the
-cached SQL text and connection; it is not an independent native statement
-handle. Use `bind` to assign a value using a name without `:`, and
+`prepare` genuinely prepares SQL through SQLx's connection-bound `prepare_with`.
+dbkit retains owned SQL metadata and reusable bindings, not an independent native
+statement handle. A fixed schema-refresh operation runs before native work,
+cached metadata is cleared before preparation, and execution uses non-persistent
+SQLx queries to avoid SQLx 0.9's schema-change column-cache panic. This currently
+sacrifices compiled execution-cache reuse, not public statement reuse. Coordinate
+concurrent schema migrations with active queries. See the manual for the
+conditions for restoring persistence.
+Use `bind` to assign a value using a name without `:`, and
 `clear-bindings` to clear assignments. Rebinding replaces the previous value.
 Repeated `:name` placeholders are accepted and each occurrence uses the same
 binding; every occurrence must have a binding before execution. Binding an
@@ -87,16 +90,25 @@ are unsupported. Only one SQL statement may be supplied. The parser has SQLite
 quote/comment awareness, but is not a general dialect parser; see the API
 manual for exact current limits.
 
-Three narrowly typed native bridges currently adapt SQLx's safe-SQL wrapper,
-owned statement SQL metadata, and SQLite column names/ordinal indices to
-Terrane's available types. They are not a backend adapter or database facade.
-Retire them when projected borrowed native terminals and `usize` argument
-conversion can express these exact boundaries without Rust snippets.
+Each current typed Rust boundary is narrow and specific: `checked-sql` builds
+SQLx's safe SQL wrapper from a source string reference; `statement-sql` reads
+owned prepared SQL text for `query_with`; `statement-columns` and `row-columns`
+copy column names; `read-row-value` performs checked ordinal access, with
+`row-value` translating failure to a dbkit error; `value-kind` copies the native
+storage-class name; and `transaction-state` reads autocommit from the SQLx locked
+handle using `unsafe rust` and `sqlite3_get_autocommit`. The lock makes access
+safe. Retire each bridge when projected safe SQL construction, owned metadata,
+borrowed column names, checked `usize` conversion, storage-class name access,
+or locked-handle autocommit inspection can express its exact boundary.
 
 Transaction state is read from SQLite's autocommit flag while the SQLx
 connection's locked handle is held; this reflects raw transaction SQL and
 implicit rollback that SQLx transaction depth does not track. Do not infer
-transaction state from a separate counter.
+transaction state from a separate counter. During ordinary live operations this
+inspection occurs while the connection is acquired; cancellation cleanup must
+restore ownership synchronously and must not await the native locked handle.
+After cancellation, `in-transaction` reports `transaction-state-unknown` until
+another live operation refreshes state, rather than returning a stale boolean.
 
 Database values preserve SQLite storage classes (null, int64 integer, float64
 real, text, bytes); booleans bind as integer 1/0 and read back as integers.
@@ -115,9 +127,12 @@ Catch `database-error`, then use `error-details; failure` to read its `code`,
 `operation`, human-readable `detail`, `driver`, and `native-code`. This follows
 HTTP-server's structured throwable pattern because typed catches currently
 expose the base throwable view. Native failures are translated to a sanitized
-`database` category without SQL, paths, or bound values; native codes are
-currently unavailable. See the [structured manual](docs/src/manual.yaml) for
-the API and native integration boundaries.
+`database` category in these structured fields; `native-code` is empty rather
+than parsed from native text. Rethrowing inside `catch` also preserves the
+original native error as the throwable cause, so `failure.render` and uncaught
+diagnostics may include native SQLx text and codes. Do not treat the cause chain
+as sanitized or expose it as a stable structured field contract. See the
+[structured manual](docs/src/manual.yaml) for the API and native integration boundaries.
 
 ## Verify
 

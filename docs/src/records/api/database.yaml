@@ -33,7 +33,9 @@ documentation:
             creates a SQLite database; its parent directory must already exist.
             Database paths are not portable DSNs. Credentials, pools, remote
             transports, read-only options, and URI configuration are not exposed.
-
+            SQLx configures SQLite with `foreign_keys=1` and
+            `busy_timeout=5000` by default; foreign-key constraints are enforced,
+            and lock contention waits up to five seconds before reporting failure.
             | Entry point | Contract |
             | --- | --- |
             | `available-drivers` | Returns a list containing `sqlite`. |
@@ -42,13 +44,18 @@ documentation:
             | `await connection.execute; sql` | Prepares, executes without parameters, closes the temporary wrapper, and returns `execution-result`. |
             | `await connection.query; sql` | Prepares, fetches buffered results without parameters, closes the temporary wrapper, and returns `result-set`. |
             | `connection.is-open` | Reports whether the connection is logically open. |
-            | `connection.in-transaction` | Reports SQLite transaction state; false after close. |
+            | `connection.in-transaction` | Reports last verified SQLite transaction state; false after close, or `transaction-state-unknown` after cancellation until another live operation refreshes it. |
             | `await connection.close` | Idempotently rolls back an active transaction, closes registered wrappers, and releases its native connection. |
 
             `postgres` and `mysql` are reserved but return `driver-unavailable`;
             other unknown names return `unknown-driver`. There is no fallback.
             Separate connections are independent, including separate in-memory
             databases. Application helpers receive the same shared handle.
+            Sharing one connection does not serialize callers: overlapping
+            operations on it fail with `connection-busy`. For concurrent request
+            handlers, use independent connections to a shared file when that
+            storage model fits; lock contention can still occur, governed by
+            SQLite's busy timeout.
     - id: statements
       title: Preparation and named bindings
       blocks:
@@ -72,24 +79,35 @@ documentation:
             a closed statement fails; closing it also removes it from its
             connection's registry. A failed native operation does not automatically
             close the connection or discard successful bindings.
+            Closing an unrelated wrapper never requires the connection to be idle.
+            A slot closed during its own operation cannot be revived when that
+            operation returns its native metadata.
 
-            Preparation calls SQLx's connection-bound `prepare_with`; compiled
-            SQLite statements reside in SQLx's connection statement cache. dbkit
-            owns the returned metadata (including SQL text and column names) and
-            exposes a connection-bound wrapper. Execution uses SQLx `query_with`
-            with that SQL text and the connection, so this wrapper is not an
-            independent native statement handle.
+            Preparation calls SQLx's connection-bound `prepare_with`; dbkit owns
+            reusable SQL metadata, not an independent native statement handle.
+            Before preparation or execution, a fixed `PRAGMA table_list` operation
+            makes SQLite refresh externally changed schema state. Before preparing
+            metadata, dbkit also clears SQLx's cached statements. Queries derive
+            column names again and decode against actual row metadata, rather than
+            retaining prepare-time shape. Applications must coordinate concurrent
+            schema migrations with active queries; this is not a DDL scheduling API.
+            Execution uses non-persistent SQLx `query_with` statements to avoid
+            SQLx 0.9's stale-column cache panic after schema changes, including
+            externally changed schemas. This deliberately gives up compiled
+            execution-cache reuse; public bindings and wrappers remain reusable.
+            Re-enable persistence only after an upstream fix passes shrink/grow
+            regressions, including changes made through another connection.
 
             The SQLite-aware scanner rewrites named occurrences to positional
-            native bindings. It preserves single/double/backtick-quoted regions,
-            square-bracket identifiers, doubled quote delimiters, line comments,
-            and block comments. Parameters inside these regions are not bindings.
-            SQL text containing NUL and unterminated regions are rejected.
+            native bindings. It preserves single/double/backtick quotes with
+            doubled delimiters, square-bracket identifiers ending at the first `]`,
+            line comments, and block comments. Parameters inside these regions are
+            not bindings. SQL text containing NUL and unterminated regions is rejected.
             Positional `?`/`?NNN`, `@name`, `$name`, and Postgres-style `::` syntax
             are not supported. One statement with an optional trailing semicolon
-            and comments is accepted. SQL scripts and bodies containing internal
-            statement separators, such as trigger definitions, are outside this
-            initial scanner contract.
+            and comments is accepted; trailing whitespace includes SQLite's form
+            feed. SQL scripts and bodies containing internal statement separators,
+            such as trigger definitions, are outside this initial scanner contract.
 
             Bind runtime values; never interpolate them into SQL. Binding does
             not quote table or column names. The scanner is SQLite-specific,
@@ -174,10 +192,15 @@ documentation:
             statement throws `connection-closed`; already buffered results remain
             usable. Close and statement destruction are idempotent.
 
-            Cancellation cleanup releases operation leases and restores prepared
-            metadata through `finally`. SQLx runs SQLite operations through its
-            worker thread; cancelling an await does not promise to interrupt the
-            query. There is no query-interrupt or per-query timeout API.
+            Cancellation finalizers return native connection ownership and release
+            leases synchronously; they never await the locked handle. Transaction
+            state is marked unknown while an operation is active. After cancellation,
+            `in-transaction` raises `transaction-state-unknown` rather than returning
+            stale state; the next live operation refreshes it. SQLx cancellation
+            does not promise to interrupt the query, so reuse or close can wait for
+            its worker to finish. Close requests native shutdown without acquiring
+            the locked handle; SQLite rolls back any uncommitted transaction.
+            There is no query-interrupt or per-query timeout API.
     - id: errors
       title: Structured errors
       blocks:
@@ -197,14 +220,19 @@ documentation:
             `missing-parameter`, `unknown-parameter`, `conversion`,
             `column-not-found`, `ambiguous-column`, `connection-closed`,
             `connection-busy`, `statement-closed`, `transaction-active`,
-            `no-transaction`, and `database`. `row-shape` rejects manually
+            `transaction-state-unknown`, `no-transaction`, and `database`. `row-shape` rejects manually
             constructed rows with unequal column/value counts.
 
             Native failures are translated to `database` with operation context.
-            SQL, paths, credentials, and bound values are not included. Native
-            codes are currently unavailable (`native-code` is empty), rather
-            than fabricated or extracted by parsing native error text. There are
-            no automatic retries or silent error suppression.
+            The structured `error-details` fields are sanitized: SQL, paths,
+            credentials, and bound values are not included; `native-code` is
+            empty rather than parsed from native error text. However, rethrowing
+            a native error inside `catch` retains it as the throwable cause.
+            Accordingly `render` and uncaught diagnostics can include native
+            SQLx messages and codes, potentially including SQL fragments or
+            identifiers. The cause chain is diagnostic output, not a sanitized
+            structured field contract. There are no automatic retries or silent
+            error suppression.
         - type: example
           id: catch-database-error
           title: Read structured failure information
@@ -229,22 +257,29 @@ documentation:
         - type: markdown
           markdown: |-
             dbkit uses SQLx's projected APIs without a handwritten Rust database
-            facade. A few small typed Rust bridges remain at native boundaries:
+            facade. Its current typed Rust boundaries are:
 
             - `checked-sql` constructs SQLx's safe SQL wrapper from a source
               string reference.
-            - `statement-sql` obtains owned SQL text from the prepared metadata
-              for `query_with`.
-            - `statement-columns` copies SQLx column names and converts its
-              ordinal length/index representation to Terrane integers;
-              `row-value` converts Terrane ordinals back to SQLx `usize`.
-            - `value-kind` copies the native storage-class name used to select
-              dbkit's strict value decoding.
+            - `statement-sql` obtains owned SQL text from prepared metadata for
+              `query_with`.
+            - `statement-columns` and `row-columns` copy native column names;
+              `read-row-value` translates checked ordinal access to optional native
+              values, and `row-value` raises a dbkit error if the access fails.
+            - `value-kind` copies SQLx's storage-class name used by strict
+              dbkit value decoding.
+            - `transaction-state` is an `unsafe rust` bridge: it reads
+              `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
+              required to inspect SQLite connection state safely. It is used only
+              during live operations, never in cancellation finalizers or close.
 
-            These bridges do not implement database behavior or adapt a backend.
-            Retire the borrowed-metadata/string bridges when projected borrowed
-            terminals preserve the native signatures; retire ordinal bridges when
-            `usize` arguments are directly expressible. SQLx remains the runtime.
+            These boundaries are not a general backend adapter. Retire `checked-sql`
+            when projected safe SQL wrapper construction accepts the source reference;
+            `statement-sql` when owned metadata access expresses the needed value;
+            column-name and ordinal bridges when borrowed metadata and checked
+            `usize` conversions are expressible; `value-kind` when the storage-class
+            name is directly accessible; and `transaction-state` when locked-handle
+            autocommit inspection is expressible. SQLx remains the runtime.
   see-also:
     - dbkit.guide.introduction
     - dbkit.tutorial.basic-database

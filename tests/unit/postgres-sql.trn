@@ -50,6 +50,23 @@ function test-postgres-nested-slices-and-case-parameters throws throwable;
     assert-equal-string; plan.names[0], 'flag'
     assert-equal-string; plan.names[1], 'lo'
 
+function test-postgres-parenthesized-subqueries-bind-independently throws throwable;
+    plan = compile-sql; 'SELECT ARRAY[(SELECT v FROM t LIMIT :n OFFSET :o)], arr[(SELECT 1 WHERE :flag)], arr[(SELECT v FROM t WHERE :filter OFFSET :skip):hi]', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT ARRAY[(SELECT v FROM t LIMIT $1 OFFSET $2)], arr[(SELECT 1 WHERE $3)], arr[(SELECT v FROM t WHERE $4 OFFSET $5):hi]'
+    assert-equal-int; plan.names.length, 5
+    assert-equal-string; plan.names[0], 'n'
+    assert-equal-string; plan.names[1], 'o'
+    assert-equal-string; plan.names[2], 'flag'
+    assert-equal-string; plan.names[3], 'filter'
+    assert-equal-string; plan.names[4], 'skip'
+
+function test-postgres-parentheses-and-nested-brackets-restore-context throws throwable;
+    plan = compile-sql; 'SELECT arr[(SELECT v FROM t WHERE :flag AND v = other[lo:hi][1]):upper], ARRAY[(VALUES (:value))]', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT arr[(SELECT v FROM t WHERE $1 AND v = other[lo:hi][1]):upper], ARRAY[(VALUES ($2))]'
+    assert-equal-int; plan.names.length, 2
+    assert-equal-string; plan.names[0], 'flag'
+    assert-equal-string; plan.names[1], 'value'
+
 function assert-postgres-sql-rejected throws throwable; code string, source string
     rejected bool = false
     try

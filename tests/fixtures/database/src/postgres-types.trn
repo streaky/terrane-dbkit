@@ -144,6 +144,25 @@ async function postgres-slices-scenario; dsn string
         else
             throw scenario-failure
         conditional.close;
+        subquery = await database.prepare; 'SELECT (ARRAY[(SELECT v FROM (VALUES (7),(9)) AS t(v) LIMIT :n::BIGINT OFFSET :skip::BIGINT)])::TEXT'
+        subquery.bind; 'n', (integer-value; 1)
+        subquery.bind; 'skip', (integer-value; 1)
+        subquery-rows = await subquery.query;
+        subquery-row = subquery-rows.fetch;
+        if subquery-row != none
+            assert-equal-string; ((subquery-row.get; 0).as-text;), '{9}'
+        else
+            throw scenario-failure
+        subquery.close;
+        subscript = await database.prepare; 'SELECT ((ARRAY[4,5,6])[(SELECT 1 WHERE :flag::BOOL):hi])::TEXT FROM (VALUES (2)) AS bounds(hi)'
+        subscript.bind; 'flag', (bool-value; true)
+        subscript-rows = await subscript.query;
+        subscript-row = subscript-rows.fetch;
+        if subscript-row != none
+            assert-equal-string; ((subscript-row.get; 0).as-text;), '{4,5}'
+        else
+            throw scenario-failure
+        subscript.close;
     finally
         await database.close;
     print; 'postgres-slices=true'

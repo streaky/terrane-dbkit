@@ -66,9 +66,9 @@ class PostgresIntegration(unittest.TestCase):
 
     def test_postgres_errors_recovery_and_metadata(self):
         self.assertEqual(self.run_app("postgres-errors"), ["postgres-errors=true"])
-
     def test_postgres_parameter_type_boundaries(self):
         self.assertEqual(self.run_app("postgres-parameter-types"), ["postgres-parameter-types=true"])
+
 
     def test_postgres_transactions_and_lifecycle(self):
         self.assertEqual(self.run_app("postgres-transactions"), ["postgres-transactions=true"])
@@ -84,6 +84,15 @@ class PostgresIntegration(unittest.TestCase):
 
     def test_postgres_expression_slices_and_bindings(self):
         self.assertEqual(self.run_app("postgres-slices"), ["postgres-slices=true"])
+
+    def test_postgres_local_validation_preserves_transaction_state(self):
+        self.assertEqual(self.run_app("postgres-local-state"), ["postgres-local-state=true"])
+
+    def test_postgres_native_error_survives_failed_recovery(self):
+        self.assertEqual(self.run_app("postgres-original-cause"), ["postgres-original-cause=true"])
+
+    def test_postgres_explicit_reprepare_recovers_schema_changes(self):
+        self.assertEqual(self.run_app("postgres-reprepare"), ["postgres-reprepare=true"])
 
 
 if __name__ == "__main__":

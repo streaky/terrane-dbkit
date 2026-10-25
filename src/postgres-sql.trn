@@ -25,7 +25,7 @@ private function compile-postgres-sql sql-plan throws database-error; source str
     delimiter-start int = 0
     delimiter-length int = 0
     semicolon-seen bool = false
-    bracket-depth int = 0
+    delimiters list of int = list
     expression-end bool = false
     while index < input.length
         byte = input[index]
@@ -125,7 +125,7 @@ private function compile-postgres-sql sql-plan throws database-error; source str
                     if index + 1 < input.length and input[index + 1] == 58
                         index = index + 2
                         expression-end = false
-                    else if bracket-depth > 0 and expression-end
+                    else if delimiters.length > 0 and delimiters[delimiters.length - 1] == 91 and expression-end
                         # A completed lower-bound expression owns this colon.
                         # A second, operand-position :name can still bind a bound.
                         index = index + 1
@@ -142,16 +142,15 @@ private function compile-postgres-sql sql-plan throws database-error; source str
                     else
                         index = index + 1
                         expression-end = false
-                case 91
-                    bracket-depth = bracket-depth + 1
+                case 40, 91
+                    # Parenthesized expressions/subqueries have their own colon
+                    # context; a nested bracket re-enters slice context.
+                    delimiters.append; byte
                     expression-end = false
                     index = index + 1
-                case 93
-                    if bracket-depth > 0
-                        bracket-depth = bracket-depth - 1
-                    expression-end = true
-                    index = index + 1
-                case 41
+                case 41, 93
+                    if delimiters.length > 0
+                        delimiters.remove; delimiters.length - 1
                     expression-end = true
                     index = index + 1
                 case else
@@ -161,7 +160,7 @@ private function compile-postgres-sql sql-plan throws database-error; source str
                         while index < input.length and ((postgres-identifier-part; input[index]) or input[index] == 36)
                             index = index + 1
                         expression-end = true
-                        if bracket-depth > 0
+                        if delimiters.length > 0 and delimiters[delimiters.length - 1] == 91
                             token = (sql-text; input[(range; token-start, index)]).upper;
                             switch token
                                 case 'CASE', 'WHEN', 'THEN', 'ELSE', 'AND', 'OR', 'NOT', 'IS', 'DISTINCT', 'FROM', 'BETWEEN', 'IN', 'LIKE', 'ILIKE', 'SIMILAR', 'TO', 'AT', 'TIME', 'ZONE', 'COLLATE', 'AS', 'SELECT'

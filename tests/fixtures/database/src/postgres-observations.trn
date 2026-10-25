@@ -1,0 +1,121 @@
+namespace app
+
+from /core/errors import throwable
+from /streaky/dbkit import config, connect, connection, statement, database-error, error-details, integer-value, real-value, text-value
+from /app/assertions import scenario-failure, assert-equal-bool, assert-equal-string
+
+async function reject-locally; database shared ref connection, prepared shared ref statement, code string, active bool
+    rejected bool = false
+    try
+        await prepared.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, code
+        rejected = true
+    assert-equal-bool; rejected, true
+    assert-equal-bool; (database.in-transaction;), active
+    rejected = false
+    try
+        await prepared.execute;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, code
+        rejected = true
+    assert-equal-bool; rejected, true
+    assert-equal-bool; (database.in-transaction;), active
+
+async function check-local-state; database shared ref connection, missing shared ref statement, small shared ref statement, ordinary shared ref statement, real shared ref statement, kind shared ref statement, closed shared ref statement, active bool
+    await reject-locally; database, missing, 'missing-parameter', active
+    await reject-locally; database, small, 'conversion', active
+    await reject-locally; database, ordinary, 'conversion', active
+    await reject-locally; database, real, 'conversion', active
+    await reject-locally; database, kind, 'conversion', active
+    await reject-locally; database, closed, 'statement-closed', active
+
+async function postgres-local-state-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    try
+        missing = await database.prepare; 'SELECT :missing::INTEGER'
+        small = await database.prepare; 'SELECT :value::SMALLINT'
+        small.bind; 'value', (integer-value; 32768)
+        ordinary = await database.prepare; 'SELECT :value::INTEGER'
+        ordinary.bind; 'value', (integer-value; 2147483648)
+        real = await database.prepare; 'SELECT :value::REAL'
+        real.bind; 'value', (real-value; 10000000000000000000000000000000000000000.0)
+        kind = await database.prepare; 'SELECT :value::INTEGER'
+        kind.bind; 'value', (text-value; 'not-an-integer')
+        closed = await database.prepare; 'SELECT 1::BIGINT'
+        closed.close;
+        await check-local-state; database, missing, small, ordinary, real, kind, closed, false
+        await database.begin;
+        await check-local-state; database, missing, small, ordinary, real, kind, closed, true
+        failed bool = false
+        try
+            await database.query; 'SELECT 1/0'
+        catch database-error
+            failed = true
+        assert-equal-bool; failed, true
+        await check-local-state; database, missing, small, ordinary, real, kind, closed, true
+        await database.rollback;
+        assert-equal-bool; (database.in-transaction;), false
+    finally
+        await database.close;
+    print; 'postgres-local-state=true'
+
+function assert-native-operation-cause; failure throwable, operation string
+    details = error-details; failure
+    assert-equal-string; details.code, 'database'
+    assert-equal-string; details.operation, operation
+    cause = failure.cause
+    if cause != none
+        # A dbkit transaction-state error must not replace the native cause.
+        native bool = false
+        try
+            throw cause
+        catch database-error
+            throw scenario-failure
+        catch throwable
+            native = true
+        assert-equal-bool; native, true
+    else
+        throw scenario-failure
+
+async function terminate-postgres-operation; dsn string, operation string
+    database = await connect; (instance config; 'postgres', dsn)
+    observer = await connect; (instance config; 'postgres', dsn)
+    try
+        pid = (await scalar; database, 'SELECT pg_backend_pid()::BIGINT').as-integer;
+        prepared = await database.prepare; 'SELECT 7::BIGINT'
+        assert-equal-bool; ((await scalar; observer, 'SELECT pg_terminate_backend(' + pid + ', 5000)').as-bool;), true
+        rejected bool = false
+        try
+            switch operation
+                case 'query'
+                    await prepared.query;
+                case 'execute'
+                    await prepared.execute;
+                case 'prepare'
+                    await database.prepare; 'SELECT 13::BIGINT'
+        catch database-error as failure
+            assert-native-operation-cause; failure, operation
+            rejected = true
+        assert-equal-bool; rejected, true
+        unknown bool = false
+        try
+            database.in-transaction;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'transaction-state-unknown'
+            unknown = true
+        assert-equal-bool; unknown, true
+        prepared.close;
+    finally
+        await observer.close;
+        try
+            await database.close;
+        catch database-error as failure
+            # Closing the deliberately terminated socket may fail, but it is retired.
+            assert-equal-string; (error-details; failure).operation, 'close'
+
+async function postgres-original-cause-scenario; dsn string
+    await terminate-postgres-operation; dsn, 'query'
+    await terminate-postgres-operation; dsn, 'execute'
+    await terminate-postgres-operation; dsn, 'prepare'
+    print; 'postgres-original-cause=true'

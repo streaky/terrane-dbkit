@@ -43,6 +43,7 @@ async function commit-postgres int; database shared ref connection
     return 1
 
 async function cancel-postgres-commit; database shared ref connection, observer shared ref connection, pid int64
+    missing = await database.prepare; 'SELECT :missing::INTEGER'
     group = task-group; int
     group.spawn; (commit-postgres; database)
     try
@@ -56,6 +57,15 @@ async function cancel-postgres-commit; database shared ref connection, observer 
             outcomes = await group.drain;
             assert-equal-bool; outcomes[0].cancelled, true
     assert-postgres-state-unknown; database
+    locally-rejected bool = false
+    try
+        await missing.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'missing-parameter'
+        locally-rejected = true
+    assert-equal-bool; locally-rejected, true
+    assert-postgres-state-unknown; database
+    missing.close;
     # Draining the pending protocol must refresh the now-committed state.
     assert-equal-int; (await postgres-integer; database, 'SELECT 7::BIGINT'), 7
     assert-equal-bool; (database.in-transaction;), false

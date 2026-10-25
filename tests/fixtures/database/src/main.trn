@@ -404,6 +404,12 @@ async function main;
             await postgres-wrapper-busy-scenario; supplied[1].text
         case 'postgres-slices'
             await postgres-slices-scenario; supplied[1].text
+        case 'postgres-reprepare'
+            await postgres-reprepare-scenario; supplied[1].text
+        case 'postgres-local-state'
+            await postgres-local-state-scenario; supplied[1].text
+        case 'postgres-original-cause'
+            await postgres-original-cause-scenario; supplied[1].text
 
 async function postgres-values-scenario; dsn string
     database = await connect; (instance config; 'postgres', dsn)
@@ -599,6 +605,71 @@ async function postgres-errors-scenario; dsn string
     print; 'postgres-errors=true'
     await database.close;
 
+async function postgres-reprepare-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    observer = await connect; (instance config; 'postgres', dsn)
+    try
+        await observer.execute; 'DROP TABLE IF EXISTS dbkit_pg_reprepare'
+        await observer.execute; 'CREATE TABLE dbkit_pg_reprepare (value INTEGER)'
+        await observer.execute; 'INSERT INTO dbkit_pg_reprepare VALUES (17)'
+        first = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await first.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-int; rows.columns.length, 1
+            assert-equal-int; ((record.get; 0).as-integer;), 17
+        else
+            throw scenario-failure
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare ADD COLUMN label TEXT DEFAULT \'fresh\''
+        rejected bool = false
+        try
+            await first.query;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'database'
+            assert-equal-string; (error-details; failure).operation, 'query'
+            rejected = true
+        assert-equal-bool; rejected, true
+        second = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await second.query;
+        assert-equal-int; rows.columns.length, 2
+        record = rows.fetch;
+        if record != none
+            assert-equal-string; ((record.get; 1).as-text;), 'fresh'
+        else
+            throw scenario-failure
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare DROP COLUMN label'
+        await observer.execute; 'TRUNCATE dbkit_pg_reprepare'
+        third = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await third.query;
+        assert-equal-int; rows.columns.length, 1
+        assert-equal-bool; (rows.fetch;) == none, true
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare ALTER COLUMN value TYPE TEXT USING value::TEXT'
+        await observer.execute; 'INSERT INTO dbkit_pg_reprepare VALUES (\'seventeen\')'
+        fourth = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await fourth.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-string; ((record.get; 0).as-text;), 'seventeen'
+        else
+            throw scenario-failure
+        filtered = await database.prepare; 'SELECT value FROM dbkit_pg_reprepare WHERE value = :value'
+        filtered.bind; 'value', (text-value; 'seventeen')
+        result = await filtered.query;
+        found = result.fetch;
+        if found != none
+            assert-equal-string; ((found.get; 0).as-text;), 'seventeen'
+        else
+            throw scenario-failure
+        first.close;
+        second.close;
+        third.close;
+        fourth.close;
+        filtered.close;
+    finally
+        await observer.close;
+        await database.close;
+    print; 'postgres-reprepare=true'
+
 async function postgres-transactions-scenario; dsn string
     database = await connect; (instance config; 'postgres', dsn)
     await database.execute; 'DROP TABLE IF EXISTS dbkit_pg_tx'
@@ -633,10 +704,21 @@ async function postgres-transactions-scenario; dsn string
     try
         await database.commit;
     catch database-error as failure
-        assert-equal-string; (error-details; failure).code, 'database'
-        assert-equal-string; (error-details; failure).operation, 'commit'
+        assert-equal-string; (error-details; failure).code, 'transaction-failed'
         rejected-commit = true
     assert-equal-bool; rejected-commit, true
+    assert-equal-bool; (database.in-transaction;), false
+    # Raw SQL keeps PostgreSQL's command-tag semantics for an aborted COMMIT.
+    await database.begin;
+    await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (4)'
+    raw-failed bool = false
+    try
+        await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (4)'
+    catch database-error
+        raw-failed = true
+    assert-equal-bool; raw-failed, true
+    await database.execute; 'COMMIT'
+    assert-equal-bool; (database.in-transaction;), false
     rows = await database.query; 'SELECT COUNT(*) FROM dbkit_pg_tx'
     record = rows.fetch;
     if record != none

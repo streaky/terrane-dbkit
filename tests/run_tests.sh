@@ -104,7 +104,7 @@ cleanup() {
   if [[ -n "$PORT_OUTPUT" ]]; then
     rm -f -- "$PORT_OUTPUT"
   fi
-  if ! run_owned docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down --remove-orphans; then
+  if ! python3 "$TESTS_DIR/run_owned.py" --cleanup docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down --remove-orphans 9>&-; then
     echo "failed to stop PostgreSQL Compose project $COMPOSE_PROJECT" >&2
     (( status != 0 )) || status=1
   fi

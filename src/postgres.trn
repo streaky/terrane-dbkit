@@ -99,7 +99,7 @@ private function postgres-decode-value database-value; value postgres-value
         case 'FLOAT8'
             real float64 = value.try_decode;
             return postgres-cell; (real-value; real)
-        case 'TEXT', 'VARCHAR', 'BPCHAR', 'NAME'
+        case 'TEXT', 'VARCHAR', 'CHAR', 'NAME'
             text string = value.try_decode;
             return postgres-cell; (text-value; text)
         case 'BYTEA'
@@ -192,7 +192,7 @@ private function postgres-bind; arguments ref postgres-arguments, value database
                 arguments.add; boolean
                 return
         case 'text'
-            if kind == 'TEXT' or kind == 'VARCHAR' or kind == 'BPCHAR' or kind == 'NAME'
+            if kind == 'TEXT' or kind == 'VARCHAR' or kind == 'CHAR' or kind == 'NAME'
                 text = value.take-text;
                 arguments.add; move text
                 return

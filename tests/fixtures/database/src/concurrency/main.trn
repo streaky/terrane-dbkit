@@ -28,6 +28,13 @@ async function await-busy; database shared ref connection, observer shared ref q
         assert-equal-string; (error-details; failure).code, 'connection-busy'
         rejected = true
     assert-equal-bool; rejected, true
+    rejected = false
+    try
+        await database.execute; 'SELECT 1'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'connection-busy'
+        rejected = true
+    assert-equal-bool; rejected, true
 
 async function busy-failure int; database shared ref connection
     await database.query; 'SELECT 1'

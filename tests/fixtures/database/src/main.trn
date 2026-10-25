@@ -5,7 +5,7 @@ from /core/errors import throwable
 from /core/collections import list, range
 from /streaky/dbkit import config, connect, connection, statement, database-value, database-error, error-details, text-value, integer-value, real-value, bytes-value, bool-value, null-value
 from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
-from /app/concurrency import concurrency-scenario, postgres-cancellation-scenario
+from /app/concurrency import concurrency-scenario, postgres-cancellation-scenario, postgres-control-cancellation-scenario, postgres-wrapper-busy-scenario
 
 function report; failure throwable
     details = error-details; failure
@@ -398,6 +398,12 @@ async function main;
             await postgres-transactions-scenario; supplied[1].text
         case 'postgres-cancel'
             await postgres-cancel-scenario; supplied[1].text
+        case 'postgres-control-cancel'
+            await postgres-control-cancellation-scenario; supplied[1].text
+        case 'postgres-wrapper-busy'
+            await postgres-wrapper-busy-scenario; supplied[1].text
+        case 'postgres-slices'
+            await postgres-slices-scenario; supplied[1].text
 
 async function postgres-values-scenario; dsn string
     database = await connect; (instance config; 'postgres', dsn)
@@ -472,7 +478,7 @@ async function postgres-errors-scenario; dsn string
     assert-equal-bool; unsupported, true
     missing-column = false
     try
-        await database.query; 'SELECT missing_column FROM dbkit_pg_values'
+        await database.query; 'SELECT missing_column FROM (SELECT 1 AS present) AS fresh_relation'
     catch database-error as failure
         assert-equal-string; (error-details; failure).code, 'database'
         assert-equal-string; (error-details; failure).driver, 'postgres'

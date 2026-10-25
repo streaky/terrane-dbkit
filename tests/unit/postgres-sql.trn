@@ -32,6 +32,24 @@ function test-postgres-array-slices-and-json-operators throws throwable;
     assert-equal-string; plan.names[0], 'key'
     assert-equal-string; plan.names[1], 'value'
 
+function test-postgres-expression-slices-and-bound-array-values throws throwable;
+    plan = compile-sql; 'SELECT ARRAY[:first,:last][lo:hi + :width], arr[(lo + 1)/* lower */:coalesce(:limit, hi)], arr[lo: :upper], arr[:index]', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT ARRAY[$1,$2][lo:hi + $3], arr[(lo + 1)/* lower */:coalesce($4, hi)], arr[lo: $5], arr[$6]'
+    assert-equal-int; plan.names.length, 6
+    assert-equal-string; plan.names[0], 'first'
+    assert-equal-string; plan.names[1], 'last'
+    assert-equal-string; plan.names[2], 'width'
+    assert-equal-string; plan.names[3], 'limit'
+    assert-equal-string; plan.names[4], 'upper'
+    assert-equal-string; plan.names[5], 'index'
+
+function test-postgres-nested-slices-and-case-parameters throws throwable;
+    plan = compile-sql; 'SELECT arr[case when :flag then :lo else 1 end:hi], arr[other[lo:hi][1]:hi], arr[: hi], arr[lo:]', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT arr[case when $1 then $2 else 1 end:hi], arr[other[lo:hi][1]:hi], arr[: hi], arr[lo:]'
+    assert-equal-int; plan.names.length, 2
+    assert-equal-string; plan.names[0], 'flag'
+    assert-equal-string; plan.names[1], 'lo'
+
 function assert-postgres-sql-rejected throws throwable; code string, source string
     rejected bool = false
     try
@@ -49,6 +67,9 @@ function test-postgres-invalid-sql-and-native-bindings throws throwable;
     assert-postgres-sql-rejected; 'sql-syntax', 'SELECT $tag$unterminated'
     assert-postgres-sql-rejected; 'sql-syntax', 'SELECT /* outer /* inner */'
     assert-postgres-sql-rejected; 'sql-syntax', (b'SELECT 1 /* \0 */'.decode; utf8)
+    assert-postgres-sql-rejected; 'multiple-statements', 'SELECT 1; ['
+    assert-postgres-sql-rejected; 'multiple-statements', 'SELECT 1; ]'
+    assert-postgres-sql-rejected; 'multiple-statements', 'SELECT 1; )'
 
 function test-postgres-unicode-dollar-tags-and-identifiers throws throwable;
     plan = compile-sql; 'SELECT $名$:literal;$名$, café$column$, :actual', 'postgres'

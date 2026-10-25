@@ -1,8 +1,9 @@
 """Real PostgreSQL black-box scenarios for the compiled dbkit fixture.
 
-Requires DBKIT_POSTGRES_DSN for an already-running dedicated test database. This
-harness never resets or removes data; tests use unique table names and the
-Compose-backed tests/run_tests.sh owns bind-directory reset and service cleanup.
+Requires DBKIT_POSTGRES_DSN for a dedicated test database. Scenarios overwrite
+tables in the fixed dbkit_pg_* namespace. The direct runner neither resets nor
+removes cluster storage; the Compose-backed tests/run_tests.sh resets its bind
+directory at startup and retains it on exit.
 """
 from pathlib import Path
 import os
@@ -39,7 +40,7 @@ class PostgresIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not DSN:
-            raise RuntimeError("DBKIT_POSTGRES_DSN is required; this harness does not reset PostgreSQL data")
+            raise RuntimeError("DBKIT_POSTGRES_DSN is required for a dedicated disposable test database")
         if not COMPILER.is_file():
             raise RuntimeError(f"Terrane compiler not found: {COMPILER}")
         built = subprocess.run([str(COMPILER), "build", str(APP)], cwd=ROOT,
@@ -74,6 +75,15 @@ class PostgresIntegration(unittest.TestCase):
 
     def test_postgres_cancellation_and_busy_sibling(self):
         self.assertEqual(self.run_app("postgres-cancel"), ["postgres-cancel=true"])
+
+    def test_postgres_cancelled_transaction_control(self):
+        self.assertEqual(self.run_app("postgres-control-cancel"), ["postgres-control-cancel=true"])
+
+    def test_postgres_same_statement_busy_and_reuse(self):
+        self.assertEqual(self.run_app("postgres-wrapper-busy"), ["postgres-wrapper-busy=true"])
+
+    def test_postgres_expression_slices_and_bindings(self):
+        self.assertEqual(self.run_app("postgres-slices"), ["postgres-slices=true"])
 
 
 if __name__ == "__main__":

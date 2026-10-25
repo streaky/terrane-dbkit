@@ -305,6 +305,7 @@ private class database-driver
             failed = this.transaction-failed
             sql = checked-sql; ref text
             arguments = postgres-arguments::default;
+            this.transaction-known = false
             await (native-query; sql, move arguments).execute; ref native
             await this.refresh-postgres; ref native
             if operation == 'commit' and failed
@@ -329,7 +330,7 @@ private class database-driver
         await this.control; 'ROLLBACK', 'rollback'
 
     function in-transaction bool;
-        if not this.transaction-known
+        if this.busy or not this.transaction-known
             throw this.failure; 'transaction-state-unknown', 'in-transaction', 'refresh with a database operation after cancellation'
         return this.transaction
 
@@ -580,12 +581,12 @@ public class statement
 
     private mutable async function execute-postgres execution-result;
         this.check-postgres;
-        prepared = this.slot.take-postgres;
+        owner = this.owner
+        native = owner.acquire-postgres; 'execute'
         try
-            arguments = this.parameters-postgres; ref prepared
-            owner = this.owner
-            native = owner.acquire-postgres; 'execute'
+            prepared = this.slot.take-postgres;
             try
+                arguments = this.parameters-postgres; ref prepared
                 sql = postgres-statement-sql; ref prepared
                 result postgres-query-result = await (native-query; sql, move arguments).execute; ref native
                 await owner.refresh-postgres; ref native
@@ -597,18 +598,18 @@ public class statement
                 await owner.refresh-postgres; ref native
                 throw postgres-failure; 'execute'
             finally
-                owner.restore-postgres; move native
+                this.slot.put-postgres; move prepared
         finally
-            this.slot.put-postgres; move prepared
+            owner.restore-postgres; move native
 
     private mutable async function query-postgres result-set;
         this.check-postgres;
-        prepared = this.slot.take-postgres;
+        owner = this.owner
+        native = owner.acquire-postgres; 'query'
         try
-            arguments = this.parameters-postgres; ref prepared
-            owner = this.owner
-            native = owner.acquire-postgres; 'query'
+            prepared = this.slot.take-postgres;
             try
+                arguments = this.parameters-postgres; ref prepared
                 sql = postgres-statement-sql; ref prepared
                 native-records list of postgres-row = await (native-query; sql, move arguments).fetch_all; ref native
                 await owner.refresh-postgres; ref native
@@ -627,9 +628,9 @@ public class statement
                 await owner.refresh-postgres; ref native
                 throw postgres-failure; 'query'
             finally
-                owner.restore-postgres; move native
+                this.slot.put-postgres; move prepared
         finally
-            this.slot.put-postgres; move prepared
+            owner.restore-postgres; move native
 
     mutable function close;
         if this.closed

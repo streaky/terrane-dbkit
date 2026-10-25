@@ -1,6 +1,6 @@
 namespace app
 
-from /app/assertions import assert-equal-int, assert-equal-string, assert-equal-bool
+from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
 from /streaky/dbkit import config, connect, database-error, error-details, statement as database-statement, integer-value, real-value, text-value, bytes-value, bool-value, null-value
 
 async function expect-postgres-bind-failure; prepared shared ref database-statement
@@ -25,6 +25,33 @@ async function postgres-parameter-types-scenario; dsn string
     prepared.bind; 'note', (text-value; 'snowman ☃')
     prepared.bind; 'payload', (bytes-value; b'\0\xff')
     prepared.bind; 'opaque', (null-value;)
+    character = await database.query; 'SELECT \'abc\'::CHAR(3)'
+    character-row = character.fetch;
+    if character-row != none
+        assert-equal-string; ((character-row.get; 0).as-text;), 'abc'
+    else
+        throw scenario-failure
+    character-parameter = await database.prepare; 'SELECT :value::CHAR(3)'
+    character-parameter.bind; 'value', (text-value; 'xyz')
+    character-result = await character-parameter.query;
+    character-row = character-result.fetch;
+    if character-row != none
+        assert-equal-string; ((character-row.get; 0).as-text;), 'xyz'
+    else
+        throw scenario-failure
+    character-parameter.close;
+    internal-character-rejected bool = false
+    try
+        await database.query; 'SELECT \'a\'::"char"'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'conversion'
+        assert-equal-string; (error-details; failure).operation, 'read-value'
+        internal-character-rejected = true
+    assert-equal-bool; internal-character-rejected, true
+    internal-character = await database.prepare; 'SELECT :value::"char"'
+    internal-character.bind; 'value', (text-value; 'a')
+    await expect-postgres-bind-failure; internal-character
+    internal-character.close;
     rows = await prepared.query;
     record = rows.fetch;
     if record != none
@@ -86,3 +113,37 @@ async function postgres-parameter-types-scenario; dsn string
     prepared.close;
     await database.close;
     print; 'postgres-parameter-types=true'
+
+async function postgres-slices-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    try
+        literal = await database.query; 'SELECT ((ARRAY[10,20,30])[1:hi])::TEXT FROM (VALUES (2)) AS bounds(hi)'
+        literal-row = literal.fetch;
+        if literal-row != none
+            assert-equal-string; ((literal-row.get; 0).as-text;), '{10,20}'
+        else
+            throw scenario-failure
+        prepared = await database.prepare; 'SELECT ((ARRAY[:first::INT4,20,:last::INT4])[lo:hi + :width::INT4])::TEXT FROM (VALUES (1,1)) AS bounds(lo,hi)'
+        prepared.bind; 'first', (integer-value; 10)
+        prepared.bind; 'last', (integer-value; 30)
+        prepared.bind; 'width', (integer-value; 1)
+        rows = await prepared.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-string; ((record.get; 0).as-text;), '{10,20}'
+        else
+            throw scenario-failure
+        prepared.close;
+        conditional = await database.prepare; 'SELECT ((ARRAY[10,20,30])[CASE WHEN :flag::BOOL THEN :lo::INT4 ELSE 1 END:hi])::TEXT FROM (VALUES (2)) AS bounds(hi)'
+        conditional.bind; 'flag', (bool-value; true)
+        conditional.bind; 'lo', (integer-value; 1)
+        conditional-rows = await conditional.query;
+        conditional-row = conditional-rows.fetch;
+        if conditional-row != none
+            assert-equal-string; ((conditional-row.get; 0).as-text;), '{10,20}'
+        else
+            throw scenario-failure
+        conditional.close;
+    finally
+        await database.close;
+    print; 'postgres-slices=true'

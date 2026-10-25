@@ -12,7 +12,7 @@ services:
         source: ./.state/postgres
         target: /var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dbkit_test -d dbkit_test"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U dbkit_test -d dbkit_test"]
       interval: 1s
       timeout: 3s
       retries: 60

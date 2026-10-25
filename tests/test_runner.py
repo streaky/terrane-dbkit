@@ -1,0 +1,148 @@
+"""Exercise the real runner with isolated command stand-ins, never Docker data."""
+from pathlib import Path
+import fcntl
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+
+TESTS = Path(__file__).resolve().parent
+STANDIN = r'''#!/usr/bin/env python3
+from pathlib import Path
+import os
+import subprocess
+import sys
+import time
+
+root = Path(os.environ['RUNNER_PROBE'])
+name = Path(sys.argv[0]).name
+if name == 'docker':
+    phase = next((part for part in ('down', 'up', 'port') if part in sys.argv), 'reset')
+else:
+    phase = 'compiler' if name == 'compiler' else 'suite'
+with (root / 'events').open('a') as output:
+    output.write(phase + '\n')
+if phase == 'down' and os.environ.get('FAIL_STOP'):
+    sys.exit(11)
+if phase == os.environ.get('BLOCK_PHASE'):
+    subprocess.Popen([sys.executable, str(root / 'descendant.py')])
+    while True:
+        time.sleep(1)
+if phase == 'port':
+    print('127.0.0.1:5432')
+if phase == 'compiler':
+    sys.exit(int(os.environ.get('COMPILER_EXIT', '0')))
+'''
+DESCENDANT = r'''from pathlib import Path
+import fcntl
+import os
+import signal
+import time
+
+root = Path(os.environ['RUNNER_PROBE'])
+def terminate(_signal, _frame):
+    time.sleep(0.2)
+    with (root / 'package/tests/.state/postgres-test.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            state = 'lock-released-early'
+        except BlockingIOError:
+            state = 'lock-held'
+    with (root / 'events').open('a') as output:
+        output.write(state + '\ndescendant-finished\n')
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, terminate)
+(root / 'ready').write_text(str(os.getpid()))
+while True:
+    time.sleep(1)
+'''
+
+
+class RunnerLifecycle(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='dbkit-runner-test-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.tests = self.root / 'package/tests'
+        self.tests.mkdir(parents=True)
+        (self.root / 'bin').mkdir()
+        for name in ('run_tests.sh', 'run_owned.py'):
+            shutil.copy2(TESTS / name, self.tests / name)
+        for path in (self.root / 'bin/docker', self.root / 'compiler',
+                     self.tests / 'test_database.py', self.tests / 'test_postgres.py'):
+            path.write_text(STANDIN)
+            path.chmod(0o755)
+        (self.root / 'descendant.py').write_text(DESCENDANT)
+        self.environment = dict(os.environ, RUNNER_PROBE=str(self.root),
+                                PATH=str(self.root / 'bin') + ':' + os.environ['PATH'])
+        self.command = ['bash', str(self.tests / 'run_tests.sh'),
+                        '--terrane', str(self.root / 'compiler')]
+
+    def events(self):
+        return (self.root / 'events').read_text().splitlines()
+
+    def test_success_and_command_failure_preserve_status_and_data(self):
+        for code in (0, 7):
+            with self.subTest(code=code):
+                state = self.tests / '.state/postgres'
+                state.mkdir(parents=True, exist_ok=True)
+                sentinel = state / 'inspection'
+                sentinel.write_text('retained')
+                result = subprocess.run(self.command, env=dict(self.environment, COMPILER_EXIT=str(code)),
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(sentinel.read_text(), 'retained')
+                events = self.events()
+                self.assertEqual(events[-1], 'down')
+                if code:
+                    self.assertEqual(events[-2], 'compiler')
+
+    def test_failed_initial_stop_prevents_reset(self):
+        result = subprocess.run(self.command, env=dict(self.environment, FAIL_STOP='1'),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 11, result.stderr)
+        self.assertNotIn('reset', self.events())
+        self.assertNotIn('up', self.events())
+
+    def test_pid_signals_reap_descendants_before_cleanup_and_unlock(self):
+        for phase in ('compiler', 'port'):
+            for number, expected in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+                with self.subTest(phase=phase, signal=number):
+                    (self.root / 'ready').unlink(missing_ok=True)
+                    (self.root / 'events').unlink(missing_ok=True)
+                    process = subprocess.Popen(self.command,
+                                               env=dict(self.environment, BLOCK_PHASE=phase),
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                               text=True, start_new_session=True)
+                    try:
+                        deadline = time.monotonic() + 5
+                        while not (self.root / 'ready').exists() and time.monotonic() < deadline:
+                            if process.poll() is not None:
+                                break
+                            time.sleep(0.01)
+                        self.assertTrue((self.root / 'ready').exists(), 'owned descendant did not start')
+                        descendant = int((self.root / 'ready').read_text())
+                        process.send_signal(number)
+                        _, stderr = process.communicate(timeout=5)
+                        self.assertEqual(process.returncode, expected, stderr)
+                        events = self.events()
+                        self.assertIn('lock-held', events)
+                        self.assertNotIn('lock-released-early', events)
+                        self.assertEqual(events[-2:], ['descendant-finished', 'down'])
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(descendant, 0)
+                        with (self.tests / '.state/postgres-test.lock').open('w') as lock:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    finally:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            process.communicate(timeout=5)
+
+
+if __name__ == '__main__':
+    unittest.main()

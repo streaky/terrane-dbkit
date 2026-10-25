@@ -64,8 +64,23 @@ if ! flock -n 9; then
   exit 2
 fi
 
-compose() {
-  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" "$@"
+CHILD_PID=""
+PORT_OUTPUT=""
+STARTING_CHILD=0
+PENDING_SIGNAL=""
+PENDING_CODE=0
+run_owned() {
+  STARTING_CHILD=1
+  python3 "$TESTS_DIR/run_owned.py" "$@" 9>&- &
+  CHILD_PID=$!
+  STARTING_CHILD=0
+  if [[ -n "$PENDING_SIGNAL" ]]; then
+    on_signal "$PENDING_SIGNAL" "$PENDING_CODE"
+  fi
+  local status=0
+  wait "$CHILD_PID" || status=$?
+  CHILD_PID=""
+  return "$status"
 }
 reset_state() {
   local expected="$TESTS_DIR/.state/postgres"
@@ -78,14 +93,18 @@ reset_state() {
     echo "refusing non-canonical PostgreSQL data reset: $STATE_DIR" >&2
     return 2
   }
-  docker run --rm --user 0:0 --entrypoint sh \
+  run_owned docker run --rm --user 0:0 --entrypoint sh \
     -v "$STATE_DIR:/data" postgres:18-bookworm \
     -ec 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
 }
 cleanup() {
   local status=$?
   trap - EXIT
-  if ! compose down --remove-orphans; then
+  trap '' INT TERM
+  if [[ -n "$PORT_OUTPUT" ]]; then
+    rm -f -- "$PORT_OUTPUT"
+  fi
+  if ! run_owned docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down --remove-orphans; then
     echo "failed to stop PostgreSQL Compose project $COMPOSE_PROJECT" >&2
     (( status != 0 )) || status=1
   fi
@@ -93,8 +112,18 @@ cleanup() {
 }
 on_signal() {
   local signal="$1" code="$2"
-  trap - INT TERM
+  if (( STARTING_CHILD )); then
+    PENDING_CODE="$code"
+    PENDING_SIGNAL="$signal"
+    return
+  fi
+  trap '' INT TERM
   echo "received $signal; stopping dbkit test run" >&2
+  if [[ -n "$CHILD_PID" ]]; then
+    kill -TERM -- "$CHILD_PID" 2>/dev/null || :
+    wait "$CHILD_PID" 2>/dev/null || :
+    CHILD_PID=""
+  fi
   exit "$code"
 }
 trap cleanup EXIT
@@ -102,10 +131,17 @@ trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
 # A failed stop must prevent any destructive reset.
-compose down --remove-orphans
+run_owned docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" down --remove-orphans
 reset_state
-compose up -d --wait
-PORT="$(compose port postgres 5432 | awk -F: '{print $NF}')"
+run_owned docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" up -d --wait
+PORT_OUTPUT="$(mktemp)"
+if ! run_owned docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE" port postgres 5432 >"$PORT_OUTPUT"; then
+  rm -f -- "$PORT_OUTPUT"
+  exit 1
+fi
+PORT="$(awk -F: '{print $NF}' "$PORT_OUTPUT")"
+rm -f -- "$PORT_OUTPUT"
+PORT_OUTPUT=""
 if [[ -z "$PORT" || ! "$PORT" =~ ^[0-9]+$ ]]; then
   echo "could not determine PostgreSQL host port" >&2
   exit 1
@@ -113,7 +149,7 @@ fi
 export DBKIT_POSTGRES_DSN="postgres://dbkit_test:dbkit_test@127.0.0.1:$PORT/dbkit_test"
 export TERRANE="$COMPILER"
 if (( ! POSTGRES_ONLY )); then
-  "$COMPILER" test "$PACKAGE_DIR"
-  python3 "$TESTS_DIR/test_database.py" "${PY_ARGS[@]}"
+  run_owned "$COMPILER" test "$PACKAGE_DIR"
+  run_owned python3 "$TESTS_DIR/test_database.py" "${PY_ARGS[@]}"
 fi
-python3 "$TESTS_DIR/test_postgres.py" "${PY_ARGS[@]}"
+run_owned python3 "$TESTS_DIR/test_postgres.py" "${PY_ARGS[@]}"

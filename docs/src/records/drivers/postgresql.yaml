@@ -84,6 +84,14 @@ documentation:
             unterminated regions and multiple statements are rejected. A body
             inside a dollar string can contain semicolons.
 
+            Inside brackets a colon after a completed lower-bound expression is
+            a slice separator, including identifier and parenthesized bounds.
+            Operand-position `:name` remains a binding, including array elements
+            and subscripts. Write `arr[lo: :upper]` to bind an upper bound without
+            confusing the separator with a `::` cast. The existing `arr[:index]`
+            spelling binds an index; write `arr[: hi]` for a native slice with an
+            omitted lower bound and identifier upper bound.
+
             PostgreSQL describes parameter types during preparation, before dbkit
             values are bound. Give ambiguous parameters a schema context or an
             explicit type, for example `SELECT :id::BIGINT`. A bare selected
@@ -110,7 +118,9 @@ documentation:
             Supported non-null fetch types are `BOOL` as dbkit `bool`;
             `INT2`, `INT4` and `INT8` as signed `int64` integers;
             `FLOAT4` and `FLOAT8` as `float64` reals;
-            `TEXT`, `VARCHAR`, `BPCHAR` and `NAME` as text; and `BYTEA` as bytes.
+            `TEXT`, `VARCHAR`, `CHAR(n)` (PostgreSQL `bpchar`) and `NAME` as text;
+            and `BYTEA` as bytes. SQLx reports fixed-width text as `CHAR`; the
+            distinct internal single-byte PostgreSQL `"char"` is not text.
             Booleans remain booleans, unlike SQLite's integer storage mapping.
 
             Integer bindings to `SMALLINT` and `INTEGER` are range-checked before
@@ -173,6 +183,10 @@ documentation:
             subsequent live operation drains the pending protocol and can wait for
             that work to finish. dbkit does not send a PostgreSQL query-cancel
             request or provide a per-query timeout API.
+            Cancellation does not imply rollback: a cancelled `commit` may still
+            finish on the server. Transaction-control operations also invalidate
+            their pre-command state before awaiting the command; recovery must
+            inspect fresh state rather than return that earlier observation.
 
             Explicit close invalidates registered statements and closes the native
             connection; the server rolls back an uncommitted transaction on
@@ -184,13 +198,15 @@ documentation:
       blocks:
         - type: markdown
           markdown: |-
-            Use the repository test runner with Docker Engine and Docker Compose
-            available. It runs dbkit unit tests, SQLite integration and PostgreSQL
-            integration by default. `--postgres-only` selects the PostgreSQL suite
+            Use the repository test runner on a Linux host with Python 3, Docker
+            Engine and Docker Compose available. It runs dbkit unit tests, SQLite
+            integration and PostgreSQL integration by default. `--postgres-only`
+            selects the PostgreSQL suite
             while keeping the same reset and cleanup rules. `--terrane` overrides
             the compiler path; the `TERRANE` environment variable is also accepted.
 
-            The stack uses `postgres:18-bookworm`, a health check, and a dynamically
+            The stack uses `postgres:18-bookworm`, a TCP health check for the final
+            server (not its temporary initialization socket), and a dynamically
             allocated loopback port. Data is bind-mounted from the fixed ignored
             `packages/dbkit/tests/.state/postgres` directory to
             `/var/lib/postgresql`, with the PostgreSQL 18 cluster beneath it. This
@@ -205,10 +221,23 @@ documentation:
             stack fails, no data reset occurs.
 
             At the end, including failed builds/tests and signals, it stops the
-            stack but leaves database files for inspection. The next managed run
-            destroys those retained files at its start. Direct invocation of
-            `tests/test_postgres.py` requires an explicit `DBKIT_POSTGRES_DSN`
-            naming a dedicated test database; it does not manage or erase storage.
+            stack but leaves database files for inspection. PID-directed INT and
+            TERM interrupt owned commands, forward termination to their process
+            group, and reap orphaned descendants through a Linux child subreaper.
+            The checkout lock remains held until child cleanup and stack shutdown
+            finish. The next managed run destroys retained files at its start.
+
+            Direct invocation of `tests/test_postgres.py` requires an explicit
+            `DBKIT_POSTGRES_DSN` naming a dedicated test database. It does not
+            manage or erase cluster storage, but scenarios drop, recreate or
+            truncate fixed tables in the `dbkit_pg_*` namespace and replace their
+            prior inspection data. Do not point it at production or other data
+            that must survive fixture execution.
+
+            The separate `tests/test_runner.py` suite exercises runner status,
+            PID-directed signals, descendant reaping and lock ownership with
+            isolated command stand-ins; it never starts Docker or touches the
+            retained database directory.
         - type: example
           id: run-postgres-test-stack
           title: Run from the Terrane repository root

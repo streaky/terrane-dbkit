@@ -11,6 +11,15 @@
   runs stop the stack and clear old test data at the start, then retain database
   files after success or failure for inspection. SQLite coverage remains in the
   default managed run.
+- Corrected transaction-control cancellation state, fixed-width PostgreSQL text
+  conversion and concurrent reuse of the same prepared wrapper. Added real
+  server-synchronized regressions for pending COMMIT and query/execute leases.
+- Preserved identifier/expression array slice bounds while retaining named
+  bindings inside PostgreSQL array expressions; documented ambiguous colon forms.
+- Gated Compose readiness on TCP startup, forwarded runner-PID signals to owned
+  command groups, and reaped descendants before cleanup/lock release. Corrected
+  direct-harness data-preservation claims and made the missing-column scenario
+  independent of pre-existing fixture tables.
 
 - Refactored SQL scanner byte dispatch into a switch while preserving quote,
   comment, parameter, and statement-termination behavior; covered ordinary

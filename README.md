@@ -127,13 +127,18 @@ With the current optimized compiler at `target/release/terrane`, run:
 target/release/terrane test packages/dbkit
 target/release/terrane run packages/dbkit/examples/basic
 python packages/dbkit/tests/test_database.py --terrane target/release/terrane -v
+python packages/dbkit/tests/test_runner.py -v
 packages/dbkit/tests/run_tests.sh -v
 target/release/terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
 ```
 
 The Python suites use only the standard library. The managed runner additionally
-requires Docker Engine and Compose: it runs unit, SQLite and PostgreSQL coverage,
-clears the dedicated PostgreSQL bind directory at the start, and retains its files
-after stopping the stack. See the [PostgreSQL test-stack reference](docs/src/records/drivers/postgresql.yaml)
-for storage and inspection details. The direct SQLite suite needs no Docker.
+requires a Linux host with Docker Engine and Compose: it runs unit, SQLite and
+PostgreSQL coverage, clears the dedicated PostgreSQL bind directory at the start,
+and retains its files after stopping the stack. It forwards PID-directed signals
+to owned commands and reaps descendants before releasing its lock. See the
+[PostgreSQL test-stack reference](docs/src/records/drivers/postgresql.yaml) for
+storage and inspection details. The direct PostgreSQL suite overwrites fixed
+`dbkit_pg_*` fixture tables and requires a disposable database. The SQLite and
+runner-lifecycle suites need no Docker.
 The HTTP example prints its bound URL; `GET /notes` reads seeded data through dbkit.

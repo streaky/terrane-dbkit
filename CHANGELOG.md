@@ -31,6 +31,8 @@
 - Protected exit cleanup from repeated signals and bounded descendant shutdown
   with TERM/KILL escalation after cancellation or command exit. Added meaningful
   start-reset/end-retention and stubborn/detached-orphan regressions.
+- Regenerated the package dependency lock to keep package-root check/test runs
+  stable; restored consistent PostgreSQL Python test spacing.
 
 - Refactored SQL scanner byte dispatch into a switch while preserving quote,
   comment, parameter, and statement-termination behavior; covered ordinary

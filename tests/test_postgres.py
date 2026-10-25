@@ -66,9 +66,9 @@ class PostgresIntegration(unittest.TestCase):
 
     def test_postgres_errors_recovery_and_metadata(self):
         self.assertEqual(self.run_app("postgres-errors"), ["postgres-errors=true"])
+
     def test_postgres_parameter_type_boundaries(self):
         self.assertEqual(self.run_app("postgres-parameter-types"), ["postgres-parameter-types=true"])
-
 
     def test_postgres_transactions_and_lifecycle(self):
         self.assertEqual(self.run_app("postgres-transactions"), ["postgres-transactions=true"])

@@ -135,8 +135,10 @@ target/release/terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
 The Python suites use only the standard library. The managed runner additionally
 requires a Linux host with Docker Engine and Compose: it runs unit, SQLite and
 PostgreSQL coverage, clears the dedicated PostgreSQL bind directory at the start,
-and retains its files after stopping the stack. It forwards PID-directed signals
-to owned commands and reaps descendants before releasing its lock. See the
+and retains its files after stopping the stack. Owned process trees are reaped
+before releasing the lock; cancellation or command exit escalates TERM to KILL
+after a one-second grace period without timing out ordinary command work.
+Repeated terminal signals do not interrupt exit cleanup. See the
 [PostgreSQL test-stack reference](docs/src/records/drivers/postgresql.yaml) for
 storage and inspection details. The direct PostgreSQL suite overwrites fixed
 `dbkit_pg_*` fixture tables and requires a disposable database. The SQLite and

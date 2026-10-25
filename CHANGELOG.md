@@ -20,6 +20,17 @@
   command groups, and reaped descendants before cleanup/lock release. Corrected
   direct-harness data-preservation claims and made the missing-column scenario
   independent of pre-existing fixture tables.
+- Made explicit PostgreSQL re-preparation clear native cached plans so fresh
+  metadata is available on the same connection after schema/type changes,
+  without automatically replaying SQL.
+- Preserved known transaction observations for pre-I/O validation failures and
+  original native operation errors when recovery probing also fails. Method
+  COMMIT of an aborted transaction now reports `transaction-failed`.
+- Scoped PostgreSQL slice lexing to its immediate delimiter context, preserving
+  bindings in parenthesized scalar expressions and subqueries.
+- Protected exit cleanup from repeated signals and bounded descendant shutdown
+  with TERM/KILL escalation after cancellation or command exit. Added meaningful
+  start-reset/end-retention and stubborn/detached-orphan regressions.
 
 - Refactored SQL scanner byte dispatch into a switch while preserving quote,
   comment, parameter, and statement-termination behavior; covered ordinary

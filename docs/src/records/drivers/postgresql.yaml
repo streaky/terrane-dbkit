@@ -84,13 +84,16 @@ documentation:
             unterminated regions and multiple statements are rejected. A body
             inside a dollar string can contain semicolons.
 
-            Inside brackets a colon after a completed lower-bound expression is
-            a slice separator, including identifier and parenthesized bounds.
-            Operand-position `:name` remains a binding, including array elements
-            and subscripts. Write `arr[lo: :upper]` to bind an upper bound without
-            confusing the separator with a `::` cast. The existing `arr[:index]`
-            spelling binds an index; write `arr[: hi]` for a native slice with an
-            omitted lower bound and identifier upper bound.
+            In the immediate bracket context, a colon after a completed lower-bound
+            expression is a slice separator. Parenthesized expressions and
+            subqueries have their own context: `WHERE :flag`, `LIMIT :n` and
+            `OFFSET :skip` still bind inside an array expression. Nested brackets
+            restore slice context, and a colon after a completed parenthesized
+            lower bound remains a separator. Operand-position `:name` remains a
+            binding, including array elements and subscripts. Write
+            `arr[lo: :upper]` to bind an upper bound without confusing the separator
+            with a `::` cast. The existing `arr[:index]` spelling binds an index;
+            write `arr[: hi]` for an omitted lower bound and identifier upper bound.
 
             PostgreSQL describes parameter types during preparation, before dbkit
             values are bound. Give ambiguous parameters a schema context or an
@@ -101,11 +104,19 @@ documentation:
             supported input type. This is driver-neutral access, not portable SQL
             or SQLite-style dynamic parameter typing.
 
-            PostgreSQL retains SQLx's ordinary prepared execution cache. SQLite's
-            schema-refresh pragmas and non-persistent execution workaround do not
-            run against PostgreSQL. Server-side schema/type changes may invalidate
-            a cached plan and surface as a database error; coordinate migrations
-            and prepare fresh work rather than assuming schemas are immutable.
+            Repeated wrapper execution uses SQLx's ordinary prepared execution
+            cache. Each explicit `prepare` first clears the connection's native
+            statement cache, so re-preparing on that same connection obtains fresh
+            result and parameter metadata after schema/type changes, including
+            empty results. This evicts other native cached plans and adds protocol
+            work; it does not invalidate their dbkit wrappers, but old wrappers may
+            retain stale metadata and should be replaced after a migration.
+            Coordinate migrations with active work. An old execution can still
+            fail with a cached-plan error: dbkit never silently retries or replays
+            SQL. Prepare a new wrapper before retrying work known to be safe to
+            retry. SQLite's schema pragmas and non-persistent execution workaround
+            do not run against PostgreSQL.
+            Roll back first if the earlier error left the transaction aborted.
     - id: values
       title: Supported values and conversions
       blocks:
@@ -148,9 +159,11 @@ documentation:
             dbkit. A failed statement inside a transaction leaves it active but
             aborted. Roll it back before doing more work. PostgreSQL otherwise
             acknowledges `COMMIT` of an aborted transaction by rolling it back;
-            dbkit's `commit` method performs that cleanup but raises a `database`
-            error rather than reporting a successful commit. Raw SQL retains
-            PostgreSQL's own command semantics.
+            dbkit's `commit` method performs that cleanup but raises
+            `transaction-failed` with an aborted/rolled-back detail instead of
+            reporting a successful commit. The connection is then known idle.
+            This is a dbkit-owned error category, not a native SQLSTATE.
+            Raw SQL retains PostgreSQL's own command semantics.
 
             SQLx 0.9 does not publicly expose exact ReadyForQuery transaction
             status. Its transaction-depth counter does not cover raw SQL and
@@ -167,6 +180,12 @@ documentation:
             exact status through a supported public API, retaining raw/failed
             transaction regressions. Do not inspect private SQLx layouts or infer
             state from a separate counter.
+
+            Recovery probing after a native operation error is best-effort. If
+            that probe also fails, state stays unknown and the original operation
+            label and native cause survive; the secondary inspection failure does
+            not replace them. A standalone inspection failure still reports
+            `database` at `transaction-state` rather than guessing a boolean.
     - id: cancellation
       title: Sharing, cancellation and close
       blocks:
@@ -177,12 +196,16 @@ documentation:
             native ownership and release that lease synchronously, without a
             protocol query or native await.
 
-            During an operation, and after cancellation until a live operation
-            refreshes state, `in-transaction` raises `transaction-state-unknown`.
-            SQLx can leave server work pending when a future is cancelled. A
-            subsequent live operation drains the pending protocol and can wait for
-            that work to finish. dbkit does not send a PostgreSQL query-cancel
-            request or provide a per-query timeout API.
+            While a lease is active, `in-transaction` raises
+            `transaction-state-unknown`. A local pre-I/O rejection, such as missing
+            bindings, an invalid parameter kind/range or a closed statement slot,
+            preserves the previously known or unknown observation when the lease
+            is released; it sends no recovery query merely to validate arguments.
+            Once native I/O starts, cancellation leaves state unknown until a live
+            operation refreshes it. SQLx can leave server work pending when a
+            future is cancelled; recovery can wait for that work to finish.
+            dbkit does not send a PostgreSQL query-cancel request or provide a
+            per-query timeout API.
             Cancellation does not imply rollback: a cancelled `commit` may still
             finish on the server. Transaction-control operations also invalidate
             their pre-command state before awaiting the command; recovery must
@@ -222,10 +245,14 @@ documentation:
 
             At the end, including failed builds/tests and signals, it stops the
             stack but leaves database files for inspection. PID-directed INT and
-            TERM interrupt owned commands, forward termination to their process
-            group, and reap orphaned descendants through a Linux child subreaper.
-            The checkout lock remains held until child cleanup and stack shutdown
-            finish. The next managed run destroys retained files at its start.
+            TERM interrupt owned commands and reap their process trees, including
+            detached-session orphans, through a Linux child subreaper. Cancellation
+            or direct-child exit starts a one-second TERM grace period, followed
+            by KILL for remaining descendants; ordinary command work has no new
+            timeout. Repeated terminal INT/TERM are ignored throughout exit
+            cleanup, including by the helper and Compose command. The checkout
+            lock stays held until descendants are reaped and stack shutdown
+            finishes. The next managed run destroys retained files at its start.
 
             Direct invocation of `tests/test_postgres.py` requires an explicit
             `DBKIT_POSTGRES_DSN` naming a dedicated test database. It does not

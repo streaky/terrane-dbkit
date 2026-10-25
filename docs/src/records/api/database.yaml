@@ -159,6 +159,9 @@ documentation:
             Driver-specific inspection and recovery behavior are documented on
             the relevant driver page. Failed commit/rollback operations raise a
             database error; inspect state before deciding how to recover.
+            PostgreSQL's method `commit` reports `transaction-failed` when it has
+            cleaned up an already-aborted transaction instead of committing it;
+            raw SQL retains the server's own command-tag semantics.
 
             A connection has one operation lease. A competing operation during
             an active lease fails with `connection-busy` rather than running on
@@ -179,9 +182,11 @@ documentation:
 
             Cancellation finalizers return native connection ownership and release
             leases synchronously; they never await the locked handle. Transaction
-            state is marked unknown while an operation is active. After cancellation,
+            state reads are unknown while a lease is active. PostgreSQL preserves
+            its prior observation when local validation rejects an operation
+            before native I/O. Once I/O starts, cancellation makes state unknown:
             `in-transaction` raises `transaction-state-unknown` rather than returning
-            stale state; the next live operation refreshes it. Cancellation does
+            stale state, and a later live operation refreshes it. Cancellation does
             not promise a server query interrupt, so reuse or close can wait for
             pending work. Close releases native storage without locked-handle
             inspection in a finalizer. There is no per-query timeout API.
@@ -204,8 +209,9 @@ documentation:
             `missing-parameter`, `unknown-parameter`, `conversion`,
             `column-not-found`, `ambiguous-column`, `connection-closed`,
             `connection-busy`, `statement-closed`, `transaction-active`,
-            `transaction-state-unknown`, `no-transaction`, and `database`. `row-shape` rejects manually
-            constructed rows with unequal column/value counts.
+            `transaction-failed`, `transaction-state-unknown`, `no-transaction`,
+            and `database`. `row-shape` rejects manually constructed rows with
+            unequal column/value counts.
 
             Native failures are translated to `database` with operation context.
             The structured `error-details` fields are sanitized: SQL, paths,
@@ -215,8 +221,11 @@ documentation:
             Accordingly `render` and uncaught diagnostics can include native
             SQLx messages and codes, potentially including SQL fragments or
             identifiers. The cause chain is diagnostic output, not a sanitized
-            structured field contract. There are no automatic retries or silent
-            error suppression.
+            structured field contract. PostgreSQL does not expose a structured
+            SQLSTATE through `native-code`; callers must not treat native diagnostic
+            text as that field. There are no automatic SQL retries or suppression
+            of the original execution failure. A failed secondary state-recovery
+            probe leaves state unknown without replacing that original failure.
         - type: example
           id: catch-database-error
           title: Read structured failure information

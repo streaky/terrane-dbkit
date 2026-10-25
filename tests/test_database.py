@@ -116,8 +116,7 @@ class DatabaseIntegration(unittest.TestCase):
                          ["database", "transaction-state=true"])
     def test_unavailable_unknown_and_invalid_configuration(self):
         self.assertEqual(self.run_app("drivers"), [
-            "driver-unavailable", "driver-unavailable", "unknown-driver",
-            "configuration",
+            "driver-unavailable", "unknown-driver", "configuration",
         ])
 
     def test_abandoned_transaction_rolls_back_and_releases_file(self):

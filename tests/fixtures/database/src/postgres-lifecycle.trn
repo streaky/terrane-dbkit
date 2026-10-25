@@ -1,0 +1,11 @@
+namespace app
+
+from /streaky/dbkit import config, connect
+
+async function abandon-postgres-transaction; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    await database.begin;
+    await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (99)'
+    # The observer waits on this lock rather than polling a teardown race.
+    # Last-owner cleanup must disconnect, roll back and release the xact lock.
+    await database.execute; 'SELECT pg_advisory_xact_lock(1717920811)'

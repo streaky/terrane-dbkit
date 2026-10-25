@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:18-bookworm
+    environment:
+      POSTGRES_DB: dbkit_test
+      POSTGRES_USER: dbkit_test
+      POSTGRES_PASSWORD: dbkit_test
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - type: bind
+        source: ./.state/postgres
+        target: /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbkit_test -d dbkit_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 60

@@ -54,6 +54,7 @@ public class database-value
     private text string = ''
     private data bytes = b''
     private boolean bool = false
+    private postgres-origin bool = false
 
     private function construct; kind string = 'null', integer int64 = 0, real float64 = 0.0, text string = '', data bytes = b'', boolean bool = false
         this.kind = kind
@@ -63,42 +64,47 @@ public class database-value
         this.data = data
         this.boolean = boolean
 
+    private function error-driver string;
+        if this.postgres-origin
+            return 'postgres'
+        return 'sqlite'
+
     function is-null bool;
         return this.kind == 'null'
 
     function as-integer int64 throws database-error;
         if this.kind != 'integer'
-            throw database-error; 'conversion', 'read-value', 'database value is not an integer'
+            throw database-error; 'conversion', 'read-value', 'database value is not an integer', '', (this.error-driver;)
         return this.integer
 
     function as-real float64 throws database-error;
         if this.kind != 'real'
-            throw database-error; 'conversion', 'read-value', 'database value is not a real'
+            throw database-error; 'conversion', 'read-value', 'database value is not a real', '', (this.error-driver;)
         return this.real
 
     function as-text string throws database-error;
         if this.kind != 'text'
-            throw database-error; 'conversion', 'read-value', 'database value is not text'
+            throw database-error; 'conversion', 'read-value', 'database value is not text', '', (this.error-driver;)
         return this.text
 
     function as-bytes bytes throws database-error;
         if this.kind != 'bytes'
-            throw database-error; 'conversion', 'read-value', 'database value is not bytes'
+            throw database-error; 'conversion', 'read-value', 'database value is not bytes', '', (this.error-driver;)
         return this.data
 
     private consuming function take-text string;
         if this.kind != 'text'
-            throw database-error; 'conversion', 'bind', 'database value is not text'
+            throw database-error; 'conversion', 'bind', 'database value is not text', '', (this.error-driver;)
         return move this.text
 
     private consuming function take-bytes bytes;
         if this.kind != 'bytes'
-            throw database-error; 'conversion', 'bind', 'database value is not bytes'
+            throw database-error; 'conversion', 'bind', 'database value is not bytes', '', (this.error-driver;)
         return move this.data
 
     function as-bool bool throws database-error;
         if this.kind != 'bool'
-            throw database-error; 'conversion', 'read-value', 'database value is not a boolean'
+            throw database-error; 'conversion', 'read-value', 'database value is not a boolean', '', (this.error-driver;)
         return this.boolean
 
 public function null-value database-value;
@@ -122,6 +128,7 @@ public function bool-value database-value; input bool
 public class row
     columns list of string = list
     private values list of database-value = list
+    private postgres-origin bool = false
 
     function construct; columns list of string, values list of database-value
         if columns.length != values.length
@@ -129,9 +136,14 @@ public class row
         this.columns = move columns
         this.values = move values
 
+    private function error-driver string;
+        if this.postgres-origin
+            return 'postgres'
+        return 'sqlite'
+
     function get database-value throws database-error; index int
         if index < 0 or index >= this.values.length
-            throw database-error; 'column-not-found', 'read-row', 'column index is out of range'
+            throw database-error; 'column-not-found', 'read-row', 'column index is out of range', '', (this.error-driver;)
         return this.values[index]
 
     function named database-value throws database-error; name string
@@ -140,11 +152,11 @@ public class row
         while index < this.columns.length
             if this.columns[index] == name
                 if found != -1
-                    throw database-error; 'ambiguous-column', 'read-row', 'column name is ambiguous'
+                    throw database-error; 'ambiguous-column', 'read-row', 'column name is ambiguous', '', (this.error-driver;)
                 found = index
             index = index + 1
         if found == -1
-            throw database-error; 'column-not-found', 'read-row', 'column name was not found'
+            throw database-error; 'column-not-found', 'read-row', 'column name was not found', '', (this.error-driver;)
         return this.values[found]
 
 public class result-set

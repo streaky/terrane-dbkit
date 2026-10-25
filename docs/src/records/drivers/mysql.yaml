@@ -26,14 +26,15 @@ documentation:
         No MySQL DSN, credentials, transport, TLS, pooling, value mapping, or
         placeholder-translation contract is exposed. This page records current
         availability, not a simulated driver or a committed implementation plan.
-        Do not infer MySQL behavior from the SQLite driver's settings or SQL
-        scanner. See [[dbkit.drivers]] for the support matrix and
-        [[dbkit.drivers.sqlite]] for the implemented driver.
+        Do not infer MySQL behavior from another driver's settings or SQL scanner.
+        See [[dbkit.drivers]] for the support matrix and the SQLite/PostgreSQL
+        reference pages for the implemented backends.
   sections: []
   see-also:
     - dbkit.drivers
     - dbkit.api.database
     - dbkit.drivers.sqlite
+    - dbkit.drivers.postgresql
 provenance:
   specification: []
   conformance: []

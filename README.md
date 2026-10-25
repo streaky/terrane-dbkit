@@ -1,9 +1,9 @@
 # dbkit
 
-`streaky/dbkit` is a Terrane-native relational database package. It currently
-provides a real local SQLite driver behind a driver-neutral connection API; it is
-an optional package, not Terrane's canonical database layer. The package requires
-the current Terrane compiler and `build`, `filesystem`, and `threads` capabilities.
+`streaky/dbkit` is a Terrane-native relational database package with SQLite and
+PostgreSQL drivers behind one driver-neutral connection API. It is an optional
+package, not Terrane's canonical database layer. It requires the current Terrane
+compiler and `build`, `filesystem`, `threads`, and `networking` capabilities.
 
 ## Getting started
 
@@ -19,7 +19,7 @@ app = "src"
 
 [profile]
 name = "notes"
-capabilities = ["build", "filesystem", "threads"]
+capabilities = ["build", "filesystem", "threads", "networking"]
 
 [terrane-dependencies.streaky.dbkit]
 path = "../dbkit"
@@ -63,14 +63,13 @@ async function main;
 
 ## API overview
 
-`config` selects a runtime driver (`sqlite` by default) and database path
-(`:memory:` by default). `connect` returns a shared dbkit `connection`; the
-concrete SQLx `SqliteConnection` stays private. `available-drivers` currently
-reports only `sqlite`; `postgres` and `mysql` are recognized but unavailable,
-and unknown driver names fail without a fallback. SQLx 0.9 provides the local
-SQLite runtime; remote drivers, a database-shaped Rust facade, pool, ORM, query
-builder, migration framework, and streaming cursor are not provided. Future
-drivers are not promised SQL portability.
+`config` selects a runtime driver (`sqlite` by default) and database setting
+(`:memory:` by default). SQLite accepts a local filename; PostgreSQL accepts a
+PostgreSQL URL. `connect` returns a shared dbkit `connection`; concrete SQLx 0.9
+connections stay private. `available-drivers` reports `sqlite` and `postgres`.
+MySQL remains unavailable, and unknown names fail without a fallback. No
+database-shaped Rust facade, pool, ORM, query builder, migration framework, or
+streaming cursor is provided. Driver-neutral access does not promise portable SQL.
 
 See the [Drivers overview](docs/src/records/drivers/index.yaml) for separate SQLite,
 PostgreSQL, and MySQL reference pages and their current availability.
@@ -84,36 +83,22 @@ Use `bind` to assign a value using a name without `:`, and
 `clear-bindings` to clear assignments. Rebinding replaces the previous value.
 Repeated `:name` placeholders are accepted and each occurrence uses the same
 binding; every occurrence must have a binding before execution. Binding an
-unknown name fails, so surplus names are rejected. Only `:name` placeholders
-are supported; positional `?`, `@name`, `$name`, and PostgreSQL `::` casts
-are unsupported. Only one SQL statement may be supplied. The parser has SQLite
-quote/comment awareness, but is not a general dialect parser; see the API
-manual for exact current limits.
+unknown name fails, so surplus names are rejected. Named SQL uses the selected
+driver's scanner: SQLite rejects foreign placeholder/cast syntax, while PostgreSQL
+preserves `::` casts, dollar strings, nested comments and array/JSON operators.
+Only one statement may be supplied. See each driver's reference for exact rules.
 
-Each current typed Rust boundary is narrow and specific: `checked-sql` builds
-SQLx's safe SQL wrapper from a source string reference; `statement-sql` reads
-owned prepared SQL text for `query_with`; `statement-columns` and `row-columns`
-copy column names; `read-row-value` performs checked ordinal access, with
-`row-value` translating failure to a dbkit error; `value-kind` copies the native
-storage-class name; and `transaction-state` reads autocommit from the SQLx locked
-handle using `unsafe rust` and `sqlite3_get_autocommit`. The lock makes access
-safe. Retire each bridge when projected safe SQL construction, owned metadata,
-borrowed column names, checked `usize` conversion, storage-class name access,
-or locked-handle autocommit inspection can express its exact boundary.
-
-Transaction state is read from SQLite's autocommit flag while the SQLx
-connection's locked handle is held; this reflects raw transaction SQL and
-implicit rollback that SQLx transaction depth does not track. Do not infer
-transaction state from a separate counter. During ordinary live operations this
-inspection occurs while the connection is acquired; cancellation cleanup must
-restore ownership synchronously and must not await the native locked handle.
+The [shared API reference](docs/src/records/api/database.yaml) records the narrow
+typed native boundaries and their retirement conditions. Transaction inspection
+uses actual backend state, including raw SQL, not a separate depth counter.
+Cancellation cleanup restores ownership synchronously without native awaits.
 After cancellation, `in-transaction` reports `transaction-state-unknown` until
 another live operation refreshes state, rather than returning a stale boolean.
 
-Database values preserve SQLite storage classes (null, int64 integer, float64
-real, text, bytes); booleans bind as integer 1/0 and read back as integers.
-Accessors are strict; there is no implicit conversion. Query results are fully
-buffered; exhaustion returns `none`, distinct from a row containing SQL NULL.
+Values have strict null, integer, real, text, bytes and bool factories; fetch kinds
+follow the selected driver's mapping. PostgreSQL preserves booleans, while SQLite
+stores them as integers. There is no implicit text/numeric conversion. Query
+results are fully buffered; exhaustion returns `none`, distinct from SQL NULL.
 Rows support positional and named access; missing indexes/names and ambiguous
 duplicate column names raise `database-error`.
 
@@ -142,10 +127,13 @@ With the current optimized compiler at `target/release/terrane`, run:
 target/release/terrane test packages/dbkit
 target/release/terrane run packages/dbkit/examples/basic
 python packages/dbkit/tests/test_database.py --terrane target/release/terrane -v
+packages/dbkit/tests/run_tests.sh -v
 target/release/terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
 ```
 
-The Python suite uses only the standard library. It builds its native fixture
-once, exercises error/reuse/value/lifetime scenarios, and independently checks
-file persistence and abandoned-transaction rollback using Python's SQLite client.
+The Python suites use only the standard library. The managed runner additionally
+requires Docker Engine and Compose: it runs unit, SQLite and PostgreSQL coverage,
+clears the dedicated PostgreSQL bind directory at the start, and retains its files
+after stopping the stack. See the [PostgreSQL test-stack reference](docs/src/records/drivers/postgresql.yaml)
+for storage and inspection details. The direct SQLite suite needs no Docker.
 The HTTP example prints its bound URL; `GET /notes` reads seeded data through dbkit.

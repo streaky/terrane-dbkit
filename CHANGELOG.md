@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added concrete SQLx 0.9 PostgreSQL support through the existing driver-neutral
+  connection, statement, value, result and structured-error API. Includes
+  PostgreSQL-aware named SQL, typed nulls, checked integer/REAL parameters, strict
+  native value mappings, raw/failed transaction state and cancellation recovery.
+  The package profile now also requires `networking`.
+- Added a PostgreSQL 18 Compose test stack with a dedicated bind mount. Managed
+  runs stop the stack and clear old test data at the start, then retain database
+  files after success or failure for inspection. SQLite coverage remains in the
+  default managed run.
+
 - Refactored SQL scanner byte dispatch into a switch while preserving quote,
   comment, parameter, and statement-termination behavior; covered ordinary
   minus/slash characters and their rejection after a statement terminator.

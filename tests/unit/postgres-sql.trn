@@ -1,0 +1,67 @@
+namespace streaky/dbkit
+
+from /core/testing import assert-equal-bool, assert-equal-int, assert-equal-string
+from /core/errors import throwable
+from /core/encodings import utf8
+
+function test-postgres-casts-and-repeated-bindings throws throwable;
+    plan = compile-sql; 'SELECT :first::INT4, :second::TEXT, :first', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT $1::INT4, $2::TEXT, $3'
+    assert-equal-int; plan.names.length, 3
+    assert-equal-string; plan.names[0], 'first'
+    assert-equal-string; plan.names[1], 'second'
+    assert-equal-string; plan.names[2], 'first'
+
+function test-postgres-dollar-strings-and-nested-comments throws throwable;
+    source = 'SELECT $tag$:ignored; $1$tag$, $$:also_ignored;$$, :bound /* outer /* :inner */ :outer */; -- :line'
+    plan = compile-sql; source, 'postgres'
+    assert-equal-string; plan.sql, 'SELECT $tag$:ignored; $1$tag$, $$:also_ignored;$$, $1 /* outer /* :inner */ :outer */; -- :line'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'bound'
+
+function test-postgres-escape-strings-preserve-literal-colons throws throwable;
+    plan = compile-sql; 'SELECT E\'it\\\'s :literal\', :bound', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT E\'it\\\'s :literal\', $1'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'bound'
+
+function test-postgres-array-slices-and-json-operators throws throwable;
+    plan = compile-sql; 'SELECT ARRAY[1,2,3][1:2], payload ? :key, payload @> :value::JSONB', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT ARRAY[1,2,3][1:2], payload ? $1, payload @> $2::JSONB'
+    assert-equal-int; plan.names.length, 2
+    assert-equal-string; plan.names[0], 'key'
+    assert-equal-string; plan.names[1], 'value'
+
+function assert-postgres-sql-rejected throws throwable; code string, source string
+    rejected bool = false
+    try
+        compile-sql; source, 'postgres'
+    catch database-error as failure
+        details = error-details; failure
+        assert-equal-string; details.code, code
+        assert-equal-string; details.driver, 'postgres'
+        rejected = true
+    assert-equal-bool; rejected, true
+
+function test-postgres-invalid-sql-and-native-bindings throws throwable;
+    assert-postgres-sql-rejected; 'parameter-style', 'SELECT $1'
+    assert-postgres-sql-rejected; 'multiple-statements', 'SELECT $$:literal;$$; SELECT 2'
+    assert-postgres-sql-rejected; 'sql-syntax', 'SELECT $tag$unterminated'
+    assert-postgres-sql-rejected; 'sql-syntax', 'SELECT /* outer /* inner */'
+    assert-postgres-sql-rejected; 'sql-syntax', (b'SELECT 1 /* \0 */'.decode; utf8)
+
+function test-postgres-unicode-dollar-tags-and-identifiers throws throwable;
+    plan = compile-sql; 'SELECT $名$:literal;$名$, café$column$, :actual', 'postgres'
+    assert-equal-string; plan.sql, 'SELECT $名$:literal;$名$, café$column$, $1'
+    assert-equal-int; plan.names.length, 1
+    assert-equal-string; plan.names[0], 'actual'
+
+function test-sql-driver-selection-does-not-fall-back throws throwable;
+    rejected bool = false
+    try
+        compile-sql; 'SELECT 1', 'unknown'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'unknown-driver'
+        assert-equal-string; (error-details; failure).driver, 'unknown'
+        rejected = true
+    assert-equal-bool; rejected, true

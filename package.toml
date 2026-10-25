@@ -6,7 +6,7 @@ rust-toolchain = "pinned"
 
 [profile]
 name = "dbkit"
-capabilities = ["build", "filesystem", "threads"]
+capabilities = ["build", "filesystem", "threads", "networking"]
 
 [namespaces]
 "streaky/dbkit" = "src"
@@ -19,8 +19,13 @@ effects = ["build", "filesystem", "threads"]
 [rust-dependencies.sqlx]
 version = "=0.9.0"
 default-features = false
-features = ["runtime-tokio", "sqlite"]
-effects = ["build", "filesystem", "threads"]
+features = ["runtime-tokio", "sqlite", "postgres", "tls-rustls-ring-native-roots"]
+effects = ["build", "filesystem", "threads", "networking"]
+
+[rust-dependencies.sqlx-postgres]
+version = "=0.9.0"
+default-features = false
+effects = ["build", "filesystem", "threads", "networking"]
 
 [rust-dependencies.sqlx-sqlite]
 version = "=0.9.0"
@@ -36,4 +41,4 @@ effects = ["build", "filesystem", "threads"]
 unit = "tests/unit"
 
 [testing.profile]
-capabilities = ["build", "filesystem", "threads"]
+capabilities = ["build", "filesystem", "threads", "networking"]

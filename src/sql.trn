@@ -27,7 +27,13 @@ private function identifier-start bool; byte int
 private function identifier-part bool; byte int
     return (identifier-start; byte) or (byte >= 48 and byte <= 57)
 
-public function compile-sql sql-plan throws database-error; source string
+public function compile-sql sql-plan throws database-error; source string, driver string = 'sqlite'
+    if driver == 'postgres'
+        return compile-postgres-sql; source
+    if driver == 'mysql'
+        throw database-error; 'driver-unavailable', 'prepare', 'requested SQL driver is not included in this build', '', driver
+    if driver != 'sqlite'
+        throw database-error; 'unknown-driver', 'prepare', 'unknown SQL driver', '', driver
     input = source.encode; utf8
     output = ''
     names list of string = list

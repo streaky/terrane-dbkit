@@ -5,7 +5,7 @@ from /core/errors import throwable
 from /core/collections import list, range
 from /streaky/dbkit import config, connect, connection, statement, database-value, database-error, error-details, text-value, integer-value, real-value, bytes-value, bool-value, null-value
 from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
-from /app/concurrency import concurrency-scenario
+from /app/concurrency import concurrency-scenario, postgres-cancellation-scenario, postgres-control-cancellation-scenario, postgres-wrapper-busy-scenario
 
 function report; failure throwable
     details = error-details; failure
@@ -349,7 +349,7 @@ async function abandoned-transaction; path string
     await prepared.execute;
 
 async function driver-scenario;
-    for driver in (list; 'postgres', 'mysql', 'unknown')
+    for driver in (list; 'mysql', 'unknown')
         try
             await connect; (instance config; driver)
         catch database-error as failure
@@ -388,3 +388,361 @@ async function main;
         case 'abandon'
             await abandoned-transaction; supplied[1].text
             print; 'abandoned=true'
+        case 'postgres-values'
+            await postgres-values-scenario; supplied[1].text
+        case 'postgres-errors'
+            await postgres-errors-scenario; supplied[1].text
+        case 'postgres-parameter-types'
+            await postgres-parameter-types-scenario; supplied[1].text
+        case 'postgres-transactions'
+            await postgres-transactions-scenario; supplied[1].text
+        case 'postgres-cancel'
+            await postgres-cancel-scenario; supplied[1].text
+        case 'postgres-control-cancel'
+            await postgres-control-cancellation-scenario; supplied[1].text
+        case 'postgres-wrapper-busy'
+            await postgres-wrapper-busy-scenario; supplied[1].text
+        case 'postgres-slices'
+            await postgres-slices-scenario; supplied[1].text
+        case 'postgres-reprepare'
+            await postgres-reprepare-scenario; supplied[1].text
+        case 'postgres-local-state'
+            await postgres-local-state-scenario; supplied[1].text
+        case 'postgres-original-cause'
+            await postgres-original-cause-scenario; supplied[1].text
+
+async function postgres-values-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    await database.execute; 'DROP TABLE IF EXISTS dbkit_pg_values'
+    await database.execute; 'CREATE TABLE dbkit_pg_values (id BIGINT PRIMARY KEY, flag BOOLEAN, label TEXT, payload BYTEA)'
+    prepared = await database.prepare; 'INSERT INTO dbkit_pg_values VALUES (:id, :flag, :label, :payload)'
+    prepared.bind; 'id', (integer-value; 1)
+    prepared.bind; 'flag', (bool-value; false)
+    prepared.bind; 'label', (text-value; 'safe')
+    prepared.bind; 'payload', (bytes-value; b'\x00\xff')
+    inserted = await prepared.execute;
+    assert-equal-int; inserted.affected, 1
+    prepared.bind; 'id', (integer-value; 2)
+    prepared.bind; 'flag', (null-value;)
+    prepared.bind; 'label', (null-value;)
+    prepared.bind; 'payload', (null-value;)
+    await prepared.execute;
+    rows = await database.query; 'SELECT id, flag, label, payload FROM dbkit_pg_values ORDER BY id'
+    first = rows.fetch;
+    if first != none
+        assert-equal-int; ((first.get; 0).as-integer;), 1
+        assert-equal-bool; ((first.get; 1).as-bool;), false
+        assert-equal-string; ((first.get; 2).as-text;), 'safe'
+        assert-equal-int; ((first.get; 3).as-bytes;).length, 2
+    else
+        throw scenario-failure
+    second = rows.fetch;
+    if second != none
+        assert-equal-bool; ((second.get; 1).is-null;), true
+        assert-equal-bool; ((second.get; 2).is-null;), true
+        assert-equal-bool; ((second.get; 3).is-null;), true
+    else
+        throw scenario-failure
+    repeated = await database.prepare; 'SELECT :value::TEXT || :value::TEXT'
+    repeated.bind; 'value', (text-value; 'x')
+    result = await repeated.query;
+    record = result.fetch;
+    if record != none
+        assert-equal-string; ((record.get; 0).as-text;), 'xx'
+    else
+        throw scenario-failure
+    injected = await database.prepare; 'SELECT :value'
+    injected.bind; 'value', (text-value; 'x\'; DROP TABLE dbkit_pg_values; --')
+    result = await injected.query;
+    record = result.fetch;
+    if record != none
+        assert-equal-string; ((record.get; 0).as-text;), 'x\'; DROP TABLE dbkit_pg_values; --'
+    else
+        throw scenario-failure
+    count = await scalar; database, 'SELECT COUNT(*) FROM dbkit_pg_values'
+    assert-equal-int; (count.as-integer;), 2
+    print; 'postgres-values=true'
+    await database.close;
+
+async function postgres-errors-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    rows = await database.query; 'SELECT 1::SMALLINT AS narrow, 2::INTEGER AS ordinary, 3::BIGINT AS wide, true AS truth'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 1
+        assert-equal-int; ((record.get; 1).as-integer;), 2
+        assert-equal-int; ((record.get; 2).as-integer;), 3
+        assert-equal-bool; ((record.get; 3).as-bool;), true
+    else
+        throw scenario-failure
+    unsupported = false
+    try
+        await database.query; 'SELECT \'00000000-0000-0000-0000-000000000001\'::UUID'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'conversion'
+        unsupported = true
+    assert-equal-bool; unsupported, true
+    missing-column = false
+    try
+        await database.query; 'SELECT missing_column FROM (SELECT 1 AS present) AS fresh_relation'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'database'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        missing-column = true
+    assert-equal-bool; missing-column, true
+    rows = await database.query; 'SELECT $tag$literal :not_a_bind$tag$ /* outer /* nested */ comment */'
+    record = rows.fetch;
+    if record != none
+        assert-equal-string; ((record.get; 0).as-text;), 'literal :not_a_bind'
+    else
+        throw scenario-failure
+    limits = await database.prepare; 'SELECT :minimum::BIGINT, :maximum::BIGINT'
+    limits.bind; 'minimum', (integer-value; -9223372036854775808)
+    limits.bind; 'maximum', (integer-value; 9223372036854775807)
+    limit-rows = await limits.query;
+    record = limit-rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), -9223372036854775808
+        assert-equal-int; ((record.get; 1).as-integer;), 9223372036854775807
+    else
+        throw scenario-failure
+    empty = await database.query; 'SELECT 1 AS retained_metadata WHERE false'
+    assert-equal-int; empty.columns.length, 1
+    assert-equal-bool; (empty.fetch;) == none, true
+    duplicate = await database.query; 'SELECT 1 AS same_name, 2 AS same_name'
+    record = duplicate.fetch;
+    if record != none
+        ambiguous = false
+        try
+            record.named; 'same_name'
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'ambiguous-column'
+            assert-equal-string; (error-details; failure).driver, 'postgres'
+            ambiguous = true
+        assert-equal-bool; ambiguous, true
+        missing = false
+        try
+            record.named; 'absent'
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'column-not-found'
+            assert-equal-string; (error-details; failure).driver, 'postgres'
+            missing = true
+        assert-equal-bool; missing, true
+    else
+        throw scenario-failure
+    missing-bind = await database.prepare; 'SELECT :required::BIGINT'
+    rejected = false
+    try
+        await missing-bind.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'missing-parameter'
+        rejected = true
+    assert-equal-bool; rejected, true
+    missing-bind.bind; 'required', (integer-value; 11)
+    rows = await missing-bind.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 11
+    else
+        throw scenario-failure
+    await database.execute; 'DROP TABLE IF EXISTS dbkit_pg_narrow'
+    await database.execute; 'CREATE TABLE dbkit_pg_narrow (value SMALLINT UNIQUE)'
+    narrow = await database.prepare; 'INSERT INTO dbkit_pg_narrow VALUES (:value)'
+    narrow.bind; 'value', (integer-value; 40000)
+    rejected = false
+    try
+        await narrow.execute;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'conversion'
+        rejected = true
+    assert-equal-bool; rejected, true
+    narrow.bind; 'value', (integer-value; 12)
+    inserted = await narrow.execute;
+    assert-equal-int; inserted.affected, 1
+    await database.execute; 'CREATE TABLE IF NOT EXISTS dbkit_pg_unique (value INTEGER UNIQUE)'
+    await database.execute; 'TRUNCATE dbkit_pg_unique'
+    await database.execute; 'INSERT INTO dbkit_pg_unique VALUES (1)'
+    native-failure = false
+    try
+        await database.execute; 'INSERT INTO dbkit_pg_unique VALUES (1)'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'database'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        native-failure = true
+    assert-equal-bool; native-failure, true
+    rows = await database.query; 'SELECT 9'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 9
+    else
+        throw scenario-failure
+    invalidated = await database.prepare; 'SELECT 10'
+    unrelated = await database.prepare; 'SELECT 11'
+    buffered = await invalidated.query;
+    unrelated.close;
+    await database.close;
+    still-buffered = buffered.fetch;
+    if still-buffered != none
+        assert-equal-int; ((still-buffered.get; 0).as-integer;), 10
+    else
+        throw scenario-failure
+    invalidated-rejected bool = false
+    try
+        await invalidated.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'connection-closed'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        invalidated-rejected = true
+    assert-equal-bool; invalidated-rejected, true
+    invalid = false
+    try
+        await unrelated.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'statement-closed'
+        invalid = true
+    assert-equal-bool; invalid, true
+    invalidated.close;
+    print; 'postgres-errors=true'
+    await database.close;
+
+async function postgres-reprepare-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    observer = await connect; (instance config; 'postgres', dsn)
+    try
+        await observer.execute; 'DROP TABLE IF EXISTS dbkit_pg_reprepare'
+        await observer.execute; 'CREATE TABLE dbkit_pg_reprepare (value INTEGER)'
+        await observer.execute; 'INSERT INTO dbkit_pg_reprepare VALUES (17)'
+        first = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await first.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-int; rows.columns.length, 1
+            assert-equal-int; ((record.get; 0).as-integer;), 17
+        else
+            throw scenario-failure
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare ADD COLUMN label TEXT DEFAULT \'fresh\''
+        rejected bool = false
+        try
+            await first.query;
+        catch database-error as failure
+            assert-equal-string; (error-details; failure).code, 'database'
+            assert-equal-string; (error-details; failure).operation, 'query'
+            rejected = true
+        assert-equal-bool; rejected, true
+        second = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await second.query;
+        assert-equal-int; rows.columns.length, 2
+        record = rows.fetch;
+        if record != none
+            assert-equal-string; ((record.get; 1).as-text;), 'fresh'
+        else
+            throw scenario-failure
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare DROP COLUMN label'
+        await observer.execute; 'TRUNCATE dbkit_pg_reprepare'
+        third = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await third.query;
+        assert-equal-int; rows.columns.length, 1
+        assert-equal-bool; (rows.fetch;) == none, true
+        await observer.execute; 'ALTER TABLE dbkit_pg_reprepare ALTER COLUMN value TYPE TEXT USING value::TEXT'
+        await observer.execute; 'INSERT INTO dbkit_pg_reprepare VALUES (\'seventeen\')'
+        fourth = await database.prepare; 'SELECT * FROM dbkit_pg_reprepare'
+        rows = await fourth.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-string; ((record.get; 0).as-text;), 'seventeen'
+        else
+            throw scenario-failure
+        filtered = await database.prepare; 'SELECT value FROM dbkit_pg_reprepare WHERE value = :value'
+        filtered.bind; 'value', (text-value; 'seventeen')
+        result = await filtered.query;
+        found = result.fetch;
+        if found != none
+            assert-equal-string; ((found.get; 0).as-text;), 'seventeen'
+        else
+            throw scenario-failure
+        first.close;
+        second.close;
+        third.close;
+        fourth.close;
+        filtered.close;
+    finally
+        await observer.close;
+        await database.close;
+    print; 'postgres-reprepare=true'
+
+async function postgres-transactions-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    await database.execute; 'DROP TABLE IF EXISTS dbkit_pg_tx'
+    await database.execute; 'CREATE TABLE dbkit_pg_tx (value INTEGER UNIQUE)'
+    await database.execute; 'BEGIN'
+    await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (1)'
+    failed-statement = false
+    try
+        await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (1)'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'database'
+        failed-statement = true
+    assert-equal-bool; failed-statement, true
+    assert-equal-bool; (database.in-transaction;), true
+    await database.rollback;
+    rows = await database.query; 'SELECT COUNT(*) FROM dbkit_pg_tx'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 0
+    else
+        throw scenario-failure
+    await database.begin;
+    await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (3)'
+    failed-statement = false
+    try
+        await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (3)'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'database'
+        failed-statement = true
+    assert-equal-bool; failed-statement, true
+    rejected-commit = false
+    try
+        await database.commit;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'transaction-failed'
+        rejected-commit = true
+    assert-equal-bool; rejected-commit, true
+    assert-equal-bool; (database.in-transaction;), false
+    # Raw SQL keeps PostgreSQL's command-tag semantics for an aborted COMMIT.
+    await database.begin;
+    await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (4)'
+    raw-failed bool = false
+    try
+        await database.execute; 'INSERT INTO dbkit_pg_tx VALUES (4)'
+    catch database-error
+        raw-failed = true
+    assert-equal-bool; raw-failed, true
+    await database.execute; 'COMMIT'
+    assert-equal-bool; (database.in-transaction;), false
+    rows = await database.query; 'SELECT COUNT(*) FROM dbkit_pg_tx'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 0
+    else
+        throw scenario-failure
+    returned = await database.query; 'INSERT INTO dbkit_pg_tx VALUES (2) RETURNING value'
+    record = returned.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 2
+    else
+        throw scenario-failure
+    await abandon-postgres-transaction; dsn
+    await database.execute; 'SET statement_timeout = 5000'
+    await database.execute; 'SELECT pg_advisory_lock(1717920811)'
+    rows = await database.query; 'SELECT COUNT(*) FROM dbkit_pg_tx'
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 1
+    else
+        throw scenario-failure
+    print; 'postgres-transactions=true'
+    await database.close;
+
+async function postgres-cancel-scenario; dsn string
+    await postgres-cancellation-scenario; dsn
+    print; 'postgres-cancel=true'

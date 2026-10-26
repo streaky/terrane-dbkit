@@ -56,10 +56,19 @@ documentation:
             and read back as integers, not a distinct SQLite boolean storage class.
             Dbkit's strict accessors do not add implicit text or numeric coercions.
 
-            Named parameters use dbkit's `:name` contract and SQLite-aware scanning.
-            Only one statement is accepted per operation; scripts, positional
-            placeholders, and other drivers' placeholder syntax are not accepted.
-            The exact binding and scanning rules remain in [[dbkit.api.database]].
+            Named parameters are ASCII `:name`: start with a letter or underscore,
+            followed by letters, digits or underscores. Each occurrence becomes
+            `?` and repeated names reuse the same binding. The scanner recognizes
+            single/double/backtick quoted regions, doubled delimiters, first-`]`
+            bracket quoting, line comments and non-nested block comments.
+            Only one statement is accepted, with an optional trailing semicolon,
+            comments and SQLite whitespace. Positional `?`, `@name`, `$name` and
+            PostgreSQL `::` casts are rejected outside quoted/comment regions.
+            Bind values, never SQL identifiers; no query builder is provided.
+
+            Live transaction inspection reads SQLite's autocommit flag through
+            SQLx's locked handle, including raw SQL and implicit rollback.
+            Cancellation finalizers and close do not await that handle.
     - id: schema-changes
       title: Schema changes and SQLx column metadata
       blocks:

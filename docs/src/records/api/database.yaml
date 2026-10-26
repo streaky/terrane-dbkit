@@ -18,10 +18,10 @@ documentation:
   blocks:
     - type: markdown
       markdown: |-
-        Import the public API from `/streaky/dbkit`. Only SQLite is implemented.
-        Runtime selection uses `config`, not a backend-specific import. SQLx 0.9
-        provides the local SQLite runtime; the concrete `SqliteConnection` remains
-        private. There is no remote driver support or database-shaped Rust facade.
+        Import the public API from `/streaky/dbkit`. SQLite and PostgreSQL use the
+        same connection, statement, value and result types. Runtime selection uses
+        `config`, not a backend-specific import. SQLx 0.9 supplies concrete native
+        runtimes; connections stay private, without a database-shaped Rust facade.
   sections:
     - id: connection
       title: Connections and configuration
@@ -31,20 +31,20 @@ documentation:
             `config` takes `driver string = 'sqlite'` and
             `database string = ':memory:'`. The database setting is interpreted
             by the selected driver, not as a portable DSN. See [[dbkit.drivers]]
-            for availability and [[dbkit.drivers.sqlite]] for SQLite path handling,
-            connection defaults, value mapping, and known limitations.
+            for availability, [[dbkit.drivers.sqlite]] for filename handling and
+            [[dbkit.drivers.postgresql]] for PostgreSQL URLs and native contracts.
             | Entry point | Contract |
             | --- | --- |
-            | `available-drivers` | Returns a list containing `sqlite`. |
+            | `available-drivers` | Returns a list containing `sqlite` and `postgres`. |
             | `await connect; settings` | Returns a `shared ref connection`. |
             | `await connection.prepare; sql` | Performs SQLx connection-bound preparation and returns a reusable dbkit statement wrapper with owned metadata. |
             | `await connection.execute; sql` | Prepares, executes without parameters, closes the temporary wrapper, and returns `execution-result`. |
             | `await connection.query; sql` | Prepares, fetches buffered results without parameters, closes the temporary wrapper, and returns `result-set`. |
             | `connection.is-open` | Reports whether the connection is logically open. |
-            | `connection.in-transaction` | Reports last verified SQLite transaction state; false after close, or `transaction-state-unknown` after cancellation until another live operation refreshes it. |
-            | `await connection.close` | Idempotently rolls back an active transaction, closes registered wrappers, and releases its native connection. |
+            | `connection.in-transaction` | Reports last verified driver transaction state; false after close, or `transaction-state-unknown` after cancellation until another live operation refreshes it. |
+            | `await connection.close` | Idempotently closes registered wrappers and the native connection; an uncommitted transaction is rolled back on shutdown. |
 
-            `postgres` and `mysql` are reserved but return `driver-unavailable`;
+            `mysql` remains reserved but returns `driver-unavailable`;
             other unknown names return `unknown-driver`. There is no fallback.
             Application helpers receive the same shared handle. Sharing one
             connection does not serialize callers: overlapping operations on it
@@ -68,7 +68,7 @@ documentation:
             `int64`. `await statement.query` returns a fully buffered `result-set`.
             Both reset execution state for reuse on success or failure. Use
             `execute` for commands and `query` for statements returning rows;
-            affected-row counts follow SQLite's native change-count semantics.
+            affected-row counts follow the selected driver's native semantics.
             `statement.close` is synchronous and idempotent. Binding or executing
             a closed statement fails; closing it also removes it from its
             connection's registry. A failed native operation does not automatically
@@ -79,28 +79,24 @@ documentation:
 
             Preparation calls SQLx's connection-bound `prepare_with`; dbkit owns
             reusable SQL metadata, not an independent native statement handle.
-            The SQLite driver currently gives up compiled execution-cache reuse
-            to avoid sequential schema-change metadata failures. Concurrent DDL
-            can still cause an uncatchable panic or a dead connection worker;
-            applications must coordinate migrations with active queries. See
-            [[dbkit.drivers.sqlite#schema-changes]] for the SQLx #2517 context,
-            current workaround, consequences, and conditions for restoring
-            persistence. Reusing dbkit statement wrappers and bindings is supported.
+            Native cache and schema-change behavior is driver-specific. SQLite's
+            current sequential-schema workaround and concurrent-DDL limitation
+            remain documented at [[dbkit.drivers.sqlite#schema-changes]].
+            PostgreSQL retains its prepared execution cache; see
+            [[dbkit.drivers.postgresql#parameters]]. Reusing dbkit wrappers and
+            retained bindings is supported on both backends.
 
-            The SQLite-aware scanner rewrites named occurrences to positional
-            native bindings. It preserves single/double/backtick quotes with
-            doubled delimiters, square-bracket identifiers ending at the first `]`,
-            line comments, and block comments. Parameters inside these regions are
-            not bindings. SQL text containing NUL and unterminated regions is rejected.
-            Positional `?`/`?NNN`, `@name`, `$name`, and Postgres-style `::` syntax
-            are not supported. One statement with an optional trailing semicolon
-            and comments is accepted; trailing whitespace includes SQLite's form
-            feed. SQL scripts and bodies containing internal statement separators,
-            such as trigger definitions, are outside this initial scanner contract.
+            The selected driver's scanner rewrites named occurrences into native
+            positions (`?` for SQLite and `$1`, `$2`, and so on for PostgreSQL).
+            It rejects SQL NUL, unterminated quoted/comment regions and multiple
+            statements outside quoted bodies. An optional trailing semicolon and
+            comments are accepted. Exact quote, comment, cast, array and operator
+            rules belong to the driver's reference page, not a portable SQL grammar.
 
             Bind runtime values; never interpolate them into SQL. Binding does
-            not quote table or column names. The scanner is SQLite-specific,
-            not a portable SQL parser or query builder.
+            not quote table or column names. PostgreSQL's type inference can
+            require explicit parameter casts even when SQLite accepts the same
+            named SQL. Neither scanner is a query builder.
     - id: values
       title: Values and conversions
       blocks:
@@ -110,21 +106,21 @@ documentation:
             the value, and `is-null` distinguishes SQL null from empty content.
             Accessors require the exact kind and otherwise throw `conversion`.
 
-            | Factory | Payload | Accessor | SQLite fetch kind |
+            | Factory | Payload | Accessor | Constructed kind |
             | --- | --- | --- | --- |
             | `null-value` | SQL null | `is-null` | `null` |
             | `integer-value` | signed `int64` | `as-integer` | `integer` |
             | `real-value` | `float64` | `as-real` | `real` |
             | `text-value` | string | `as-text` | `text` |
             | `bytes-value` | bytes | `as-bytes` | `bytes` |
-            | `bool-value` | bool | `as-bool` before binding | `integer` (1 or 0) |
+            | `bool-value` | bool | `as-bool` | `bool` |
 
-            Text, bytes, integers, reals, booleans, and null do not implicitly
-            convert into one another. SQLite returns its stored value class, not
-            a type inferred from the column declaration. In particular a boolean
-            binding comes back as an integer, and SQLite column affinity can change
-            stored types. Supply finite reals for portable supported behavior;
-            nonfinite real semantics are not part of the initial contract.
+            Text, bytes, integers, reals, booleans and null do not implicitly
+            convert into one another. Fetch kinds follow the driver's mapping:
+            SQLite returns storage classes and reads a bound boolean as an
+            integer; PostgreSQL preserves native booleans and checks parameter
+            types/ranges before encoding. See the per-driver value contracts.
+            Supply finite reals for portable supported behavior.
             Decimal, date/time, arbitrary-precision database integers, and automatic
             domain codecs are not currently provided. Encode such domain values
             explicitly as text/bytes or use a schema-appropriate supported type.
@@ -153,16 +149,19 @@ documentation:
       blocks:
         - type: markdown
           markdown: |-
-            `await connection.begin`, `commit`, and `rollback` use SQLite's real
-            transaction state. Beginning an already-active transaction throws
+            `await connection.begin`, `commit` and `rollback` use verified native
+            transaction state. Beginning an active transaction throws
             `transaction-active`; committing or rolling back without one throws
-            `no-transaction`. Nested transactions and savepoint helpers are not
-            implemented. Raw transaction SQL is reflected in `in-transaction`.
-            State includes implicit SQLite rollback and is read from SQLite's
-            autocommit flag while the SQLx connection's locked handle is held,
-            not inferred from SQLx transaction depth. Failed commit/rollback
-            operations report a database error; inspect transaction state before
-            deciding how to recover.
+            `no-transaction`. Nested transaction/savepoint helpers are not
+            implemented. Raw SQL is reflected in `in-transaction`, including
+            SQLite's implicit rollback and PostgreSQL's failed transaction state.
+            Neither driver infers truth from SQLx's transaction-depth counter.
+            Driver-specific inspection and recovery behavior are documented on
+            the relevant driver page. Failed commit/rollback operations raise a
+            database error; inspect state before deciding how to recover.
+            PostgreSQL's method `commit` reports `transaction-failed` when it has
+            cleaned up an already-aborted transaction instead of committing it;
+            raw SQL retains the server's own command-tag semantics.
 
             A connection has one operation lease. A competing operation during
             an active lease fails with `connection-busy` rather than running on
@@ -183,13 +182,14 @@ documentation:
 
             Cancellation finalizers return native connection ownership and release
             leases synchronously; they never await the locked handle. Transaction
-            state is marked unknown while an operation is active. After cancellation,
+            state reads are unknown while a lease is active. PostgreSQL preserves
+            its prior observation when local validation rejects an operation
+            before native I/O. Once I/O starts, cancellation makes state unknown:
             `in-transaction` raises `transaction-state-unknown` rather than returning
-            stale state; the next live operation refreshes it. SQLx cancellation
-            does not promise to interrupt the query, so reuse or close can wait for
-            its worker to finish. Close requests native shutdown without acquiring
-            the locked handle; SQLite rolls back any uncommitted transaction.
-            There is no query-interrupt or per-query timeout API.
+            stale state, and a later live operation refreshes it. Cancellation does
+            not promise a server query interrupt, so reuse or close can wait for
+            pending work. Close releases native storage without locked-handle
+            inspection in a finalizer. There is no per-query timeout API.
     - id: errors
       title: Structured errors
       blocks:
@@ -209,8 +209,9 @@ documentation:
             `missing-parameter`, `unknown-parameter`, `conversion`,
             `column-not-found`, `ambiguous-column`, `connection-closed`,
             `connection-busy`, `statement-closed`, `transaction-active`,
-            `transaction-state-unknown`, `no-transaction`, and `database`. `row-shape` rejects manually
-            constructed rows with unequal column/value counts.
+            `transaction-failed`, `transaction-state-unknown`, `no-transaction`,
+            and `database`. `row-shape` rejects manually constructed rows with
+            unequal column/value counts.
 
             Native failures are translated to `database` with operation context.
             The structured `error-details` fields are sanitized: SQL, paths,
@@ -220,8 +221,11 @@ documentation:
             Accordingly `render` and uncaught diagnostics can include native
             SQLx messages and codes, potentially including SQL fragments or
             identifiers. The cause chain is diagnostic output, not a sanitized
-            structured field contract. There are no automatic retries or silent
-            error suppression.
+            structured field contract. PostgreSQL does not expose a structured
+            SQLSTATE through `native-code`; callers must not treat native diagnostic
+            text as that field. There are no automatic SQL retries or suppression
+            of the original execution failure. A failed secondary state-recovery
+            probe leaves state unknown without replacing that original failure.
         - type: example
           id: catch-database-error
           title: Read structured failure information
@@ -261,6 +265,20 @@ documentation:
               `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
               required to inspect SQLite connection state safely. It is used only
               during live operations, never in cancellation finalizers or close.
+            - PostgreSQL metadata, type-name and checked ordinal helpers mirror
+              those narrow owned-value boundaries. Parameter type lookup uses an
+              explicit optional native out-reference; row/value provenance remains
+              in source data without retaining a connection.
+            - `postgres-bind-null` supplies server-described type information to
+              a private SQLx null encoder. Retire it when projected APIs express
+              dynamic typed-null encoding.
+            - `postgres-narrow-real` performs checked finite `float64` to `float32`
+              narrowing. Retire it when an equivalent checked native conversion
+              is expressible without losing supported values.
+            - `postgres-transaction-state` uses uncached simple-protocol savepoint
+              probes because SQLx's exact ReadyForQuery status is private. This is
+              extra live-operation I/O, never cancellation-finalizer I/O. Retire
+              it when a supported public accessor provides exact native state.
 
             These boundaries are not a general backend adapter. Retire `checked-sql`
             when projected safe SQL wrapper construction accepts the source reference;
@@ -274,6 +292,7 @@ documentation:
     - dbkit.tutorial.basic-database
     - dbkit.drivers
     - dbkit.drivers.sqlite
+    - dbkit.drivers.postgresql
 provenance:
   specification: []
   conformance: []

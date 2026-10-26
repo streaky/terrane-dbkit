@@ -28,6 +28,13 @@ async function await-busy; database shared ref connection, observer shared ref q
         assert-equal-string; (error-details; failure).code, 'connection-busy'
         rejected = true
     assert-equal-bool; rejected, true
+    rejected = false
+    try
+        await database.execute; 'SELECT 1'
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'connection-busy'
+        rejected = true
+    assert-equal-bool; rejected, true
 
 async function busy-failure int; database shared ref connection
     await database.query; 'SELECT 1'
@@ -100,3 +107,48 @@ public async function concurrency-scenario; mode string
     heavy.close;
     await database.close;
     print; mode + '=true'
+
+public async function postgres-cancellation-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    heavy = await database.prepare; 'SELECT 2000001000000::BIGINT FROM pg_sleep(10)'
+    unrelated = await database.prepare; 'SELECT 2'
+    observer = shared ref (instance query-state;)
+    group = task-group; int
+    group.spawn; (long-query; heavy, observer)
+    try
+        await await-busy; database, observer
+        unrelated.close;
+        heavy.close;
+        group.spawn; (busy-failure; database)
+    finally
+        outcomes = await group.drain;
+        assert-equal-bool; outcomes[0].cancelled, true
+        sibling-error = outcomes[1].error
+        if sibling-error != none
+            assert-equal-string; (error-details; sibling-error).code, 'connection-busy'
+        else
+            throw scenario-failure
+    unknown bool = false
+    try
+        database.in-transaction;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'transaction-state-unknown'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        unknown = true
+    assert-equal-bool; unknown, true
+    closed bool = false
+    try
+        await heavy.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'statement-closed'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        closed = true
+    assert-equal-bool; closed, true
+    recovered = await database.query; 'SELECT 7'
+    record = recovered.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 7
+    else
+        throw scenario-failure
+    heavy.close;
+    await database.close;

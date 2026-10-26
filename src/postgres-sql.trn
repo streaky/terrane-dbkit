@@ -1,0 +1,177 @@
+namespace streaky/dbkit
+
+from /core/collections import list, range
+from /core/encodings import utf8
+
+private function postgres-identifier-start bool; byte int
+    return (identifier-start; byte) or byte >= 128
+
+private function postgres-identifier-part bool; byte int
+    return (identifier-part; byte) or byte >= 128
+
+private function postgres-sql-error throws database-error; code string, operation string, message string
+    throw instance database-error; code, operation, message, '', 'postgres'
+
+# PostgreSQL has dollar strings, nested comments, casts and array slices. Keep
+# these lexical rules separate from SQLite's backtick/bracket quoting rules.
+private function compile-postgres-sql sql-plan throws database-error; source string
+    input = source.encode; utf8
+    output = ''
+    names list of string = list
+    index int = 0
+    start int = 0
+    quote int = 0
+    escaped bool = false
+    delimiter-start int = 0
+    delimiter-length int = 0
+    semicolon-seen bool = false
+    delimiters list of int = list
+    expression-end bool = false
+    while index < input.length
+        byte = input[index]
+        if byte == 0
+            postgres-sql-error; 'sql-syntax', 'prepare', 'SQL text must not contain NUL'
+        if quote == 36
+            matched bool = index + delimiter-length <= input.length
+            offset int = 0
+            while matched and offset < delimiter-length
+                if input[index + offset] != input[delimiter-start + offset]
+                    matched = false
+                offset = offset + 1
+            if matched
+                index = index + delimiter-length
+                quote = 0
+                expression-end = true
+            else
+                index = index + 1
+        else if quote != 0
+            if escaped and byte == 92 and index + 1 < input.length
+                if input[index + 1] == 0
+                    postgres-sql-error; 'sql-syntax', 'prepare', 'SQL text must not contain NUL'
+                index = index + 2
+            else if byte == quote
+                if index + 1 < input.length and input[index + 1] == quote
+                    index = index + 2
+                else
+                    quote = 0
+                    index = index + 1
+                    expression-end = true
+            else
+                index = index + 1
+        else
+            if semicolon-seen and byte != 32 and byte != 9 and byte != 10 and byte != 12 and byte != 13 and byte != 45 and byte != 47
+                postgres-sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+            switch byte
+                case 39, 34
+                    escaped = false
+                    if byte == 39 and index > 0 and (input[index - 1] == 69 or input[index - 1] == 101)
+                        escaped = index == 1 or not ((postgres-identifier-part; input[index - 2]) or input[index - 2] == 36)
+                    quote = byte
+                    index = index + 1
+                case 45
+                    if index + 1 < input.length and input[index + 1] == 45
+                        index = index + 2
+                        while index < input.length and input[index] != 10 and input[index] != 13
+                            if input[index] == 0
+                                postgres-sql-error; 'sql-syntax', 'prepare', 'SQL text must not contain NUL'
+                            index = index + 1
+                    else
+                        if semicolon-seen
+                            postgres-sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+                        index = index + 1
+                        expression-end = false
+                case 47
+                    if index + 1 < input.length and input[index + 1] == 42
+                        index = index + 2
+                        depth int = 1
+                        while index < input.length and depth > 0
+                            if input[index] == 0
+                                postgres-sql-error; 'sql-syntax', 'prepare', 'SQL text must not contain NUL'
+                            if index + 1 < input.length and input[index] == 47 and input[index + 1] == 42
+                                depth = depth + 1
+                                index = index + 2
+                            else if index + 1 < input.length and input[index] == 42 and input[index + 1] == 47
+                                depth = depth - 1
+                                index = index + 2
+                            else
+                                index = index + 1
+                        if depth != 0
+                            postgres-sql-error; 'sql-syntax', 'prepare', 'unterminated SQL comment'
+                    else
+                        if semicolon-seen
+                            postgres-sql-error; 'multiple-statements', 'prepare', 'only one SQL statement is allowed'
+                        index = index + 1
+                        expression-end = false
+                case 36
+                    if index > 0 and ((postgres-identifier-part; input[index - 1]) or input[index - 1] == 36)
+                        index = index + 1
+                    else
+                        end = index + 1
+                        if end < input.length and (postgres-identifier-start; input[end])
+                            end = end + 1
+                            while end < input.length and (postgres-identifier-part; input[end])
+                                end = end + 1
+                        if end >= input.length or input[end] != 36
+                            postgres-sql-error; 'parameter-style', 'prepare', 'native positional SQL parameters are not supported'
+                        delimiter-start = index
+                        delimiter-length = end - index + 1
+                        quote = 36
+                        index = end + 1
+                        expression-end = false
+                case 59
+                    semicolon-seen = true
+                    index = index + 1
+                case 58
+                    if index + 1 < input.length and input[index + 1] == 58
+                        index = index + 2
+                        expression-end = false
+                    else if delimiters.length > 0 and delimiters[delimiters.length - 1] == 91 and expression-end
+                        # A completed lower-bound expression owns this colon.
+                        # A second, operand-position :name can still bind a bound.
+                        index = index + 1
+                        expression-end = false
+                    else if index + 1 < input.length and (identifier-start; input[index + 1])
+                        index = index + 2
+                        name-start = index - 1
+                        while index < input.length and (identifier-part; input[index])
+                            index = index + 1
+                        names.append; (sql-text; input[(range; name-start, index)])
+                        output = output + (sql-text; input[(range; start, name-start - 1)]) + '$' + names.length
+                        start = index
+                        expression-end = true
+                    else
+                        index = index + 1
+                        expression-end = false
+                case 40, 91
+                    # Parenthesized expressions/subqueries have their own colon
+                    # context; a nested bracket re-enters slice context.
+                    delimiters.append; byte
+                    expression-end = false
+                    index = index + 1
+                case 41, 93
+                    if delimiters.length > 0
+                        delimiters.remove; delimiters.length - 1
+                    expression-end = true
+                    index = index + 1
+                case else
+                    if postgres-identifier-start; byte
+                        token-start = index
+                        index = index + 1
+                        while index < input.length and ((postgres-identifier-part; input[index]) or input[index] == 36)
+                            index = index + 1
+                        expression-end = true
+                        if delimiters.length > 0 and delimiters[delimiters.length - 1] == 91
+                            token = (sql-text; input[(range; token-start, index)]).upper;
+                            switch token
+                                case 'CASE', 'WHEN', 'THEN', 'ELSE', 'AND', 'OR', 'NOT', 'IS', 'DISTINCT', 'FROM', 'BETWEEN', 'IN', 'LIKE', 'ILIKE', 'SIMILAR', 'TO', 'AT', 'TIME', 'ZONE', 'COLLATE', 'AS', 'SELECT'
+                                    expression-end = false
+                    else
+                        if byte >= 48 and byte <= 57
+                            expression-end = true
+                        else if byte != 32 and byte != 9 and byte != 10 and byte != 12 and byte != 13
+                            expression-end = false
+                        index = index + 1
+    if quote != 0
+        postgres-sql-error; 'sql-syntax', 'prepare', 'unterminated quoted SQL region'
+    output = output + (sql-text; input[(range; start, input.length)])
+    return instance sql-plan; output, names

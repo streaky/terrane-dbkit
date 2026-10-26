@@ -5,6 +5,7 @@ from /core/errors import throwable
 from /deps/sqlx-core/query import query_with as native-query
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-sqlite import SqliteConnectOptions as native-options, SqliteConnection as native-connection, SqliteStatement as native-statement, SqliteArguments as native-arguments, SqliteRow as native-row, SqliteValue as native-value, SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
+from /deps/sqlx-postgres import PgConnectOptions as postgres-options, PgConnection as postgres-connection, PgStatement as postgres-statement, PgArguments as postgres-arguments, PgRow as postgres-row, PgTypeInfo as postgres-type-info, PgQueryResult as postgres-query-result
 
 public class config
     driver string = 'sqlite'
@@ -15,7 +16,7 @@ public class config
         this.database = database
 
 public function available-drivers list of string;
-    return list; 'sqlite'
+    return list; 'sqlite', 'postgres'
 
 private function database-failure database-error; operation string
     return instance database-error; 'database', operation, 'SQLite operation failed'
@@ -129,10 +130,12 @@ private function bind-native; arguments ref native-arguments, value database-val
 # Non-persistent execution avoids SQLx 0.9 stale-schema column metadata.
 private class statement-slot
     native native-statement|none = none
+    private postgres postgres-statement|none = none
     private closed bool = false
 
-    function construct; native native-statement
+    function construct; native native-statement|none = none, postgres postgres-statement|none = none
         this.native = move native
+        this.postgres = move postgres
 
     mutable function take native-statement;
         if this.closed
@@ -146,23 +149,42 @@ private class statement-slot
         if not this.closed
             this.native = move value
 
+    mutable function take-postgres postgres-statement;
+        if this.closed
+            throw database-error; 'statement-closed', 'statement', 'statement is closed', '', 'postgres'
+        value = move this.postgres
+        if value != none
+            return move value
+        throw database-error; 'statement-closed', 'statement', 'statement is closed', '', 'postgres'
+
+    mutable function put-postgres; value postgres-statement
+        if not this.closed
+            this.postgres = move value
+
     mutable function close;
         this.closed = true
         this.native = none
+        this.postgres = none
 
-private class sqlite-driver
+private class database-driver
     private native native-connection|none = none
+    private postgres postgres-connection|none = none
+    private kind string = 'sqlite'
+    private transaction-failed bool = false
     private statements map of int, shared ref statement-slot
     private next-id int = 0
     private busy bool = false
     private transaction bool = false
     private transaction-known bool = true
 
-    function construct; native native-connection
+    function construct; native native-connection|none = none, postgres postgres-connection|none = none
+        if postgres != none
+            this.kind = 'postgres'
         this.native = move native
+        this.postgres = move postgres
 
     function is-open bool;
-        return this.busy or this.native != none
+        return this.busy or this.native != none or this.postgres != none
 
     private mutable function acquire native-connection; operation string
         if this.busy
@@ -178,6 +200,36 @@ private class sqlite-driver
         this.native = move native
         this.busy = false
 
+    function failure database-error; code string, operation string, message string
+        return instance database-error; code, operation, message, '', this.kind
+
+    private mutable function acquire-postgres postgres-connection; operation string
+        if this.busy
+            throw this.failure; 'connection-busy', operation, 'connection already has an active operation'
+        native = move this.postgres
+        if native != none
+            this.busy = true
+            return move native
+        throw this.failure; 'connection-closed', operation, 'connection is closed'
+
+    private mutable function restore-postgres; native postgres-connection
+        this.postgres = move native
+        this.busy = false
+
+    private mutable async function refresh-postgres; native ref postgres-connection
+        this.transaction-known = false
+        state = await postgres-transaction-state; ref native
+        this.transaction = state != 0
+        this.transaction-failed = state == 2
+        this.transaction-known = true
+
+    private mutable async function recover-postgres-state; native ref postgres-connection
+        # Probe recovery must not replace the caller's original native error.
+        try
+            await this.refresh-postgres; ref native
+        catch throwable
+            this.transaction-known = false
+
 
     private mutable function register int; slot shared ref statement-slot
         this.next-id = this.next-id + 1
@@ -188,7 +240,9 @@ private class sqlite-driver
         if (this.statements.get.checked; id) != none
             this.statements.remove; id
 
-    mutable async function prepare shared ref statement; owner shared ref sqlite-driver, source string
+    mutable async function prepare shared ref statement; owner shared ref database-driver, source string
+        if this.kind == 'postgres'
+            return await this.prepare-postgres; owner, source
         plan = compile-sql; source
         native = this.acquire; 'prepare'
         try
@@ -214,19 +268,66 @@ private class sqlite-driver
         finally
             this.restore; move native
 
-    mutable async function execute execution-result; owner shared ref sqlite-driver, source string
+    mutable async function execute execution-result; owner shared ref database-driver, source string
         prepared = await this.prepare; owner, source
         try
             return await prepared.execute;
         finally
             prepared.close;
 
-    mutable async function query result-set; owner shared ref sqlite-driver, source string
+    mutable async function query result-set; owner shared ref database-driver, source string
         prepared = await this.prepare; owner, source
         try
             return await prepared.query;
         finally
             prepared.close;
+
+    private mutable async function prepare-postgres shared ref statement; owner shared ref database-driver, source string
+        plan = compile-sql; source, 'postgres'
+        native = this.acquire-postgres; 'prepare'
+        try
+            sql = checked-sql; ref plan.sql
+            types list of postgres-type-info = list;
+            this.transaction-known = false
+            await native.clear_cached_statements;
+            prepared postgres-statement = await native.prepare_with; sql, types
+            await this.refresh-postgres; ref native
+            slot = shared ref (instance statement-slot; none, move prepared)
+            id = this.register; slot
+            return shared ref (instance statement; owner, slot, id, plan.names)
+        catch database-error as failure
+            throw failure
+        catch throwable
+            await this.recover-postgres-state; ref native
+            throw postgres-failure; 'prepare'
+        finally
+            this.restore-postgres; move native
+
+    private mutable async function control-postgres; text string, operation string
+        native = this.acquire-postgres; operation
+        try
+            await this.refresh-postgres; ref native
+            if operation == 'begin' and this.transaction
+                throw this.failure; 'transaction-active', operation, 'nested transactions are not supported'
+            if operation != 'begin' and not this.transaction
+                throw this.failure; 'no-transaction', operation, 'connection has no active transaction'
+            failed = this.transaction-failed
+            sql = checked-sql; ref text
+            arguments = postgres-arguments::default;
+            this.transaction-known = false
+            await (native-query; sql, move arguments).execute; ref native
+            await this.refresh-postgres; ref native
+            if operation == 'commit' and failed
+                # PostgreSQL acknowledges an aborted COMMIT by rolling back.
+                # The connection is usable again, but no commit succeeded.
+                throw this.failure; 'transaction-failed', 'commit', 'transaction was aborted; COMMIT rolled it back'
+        catch database-error as failure
+            throw failure
+        catch throwable
+            await this.recover-postgres-state; ref native
+            throw postgres-failure; operation
+        finally
+            this.restore-postgres; move native
 
     mutable async function begin;
         await this.control; 'BEGIN', 'begin'
@@ -238,11 +339,14 @@ private class sqlite-driver
         await this.control; 'ROLLBACK', 'rollback'
 
     function in-transaction bool;
-        if not this.transaction-known
-            throw database-error; 'transaction-state-unknown', 'in-transaction', 'refresh with a database operation after cancellation'
+        if this.busy or not this.transaction-known
+            throw this.failure; 'transaction-state-unknown', 'in-transaction', 'refresh with a database operation after cancellation'
         return this.transaction
 
     private mutable async function control; text string, operation string
+        if this.kind == 'postgres'
+            await this.control-postgres; text, operation
+            return
         native = this.acquire; operation
         try
             this.transaction = await transaction-state; ref native
@@ -268,6 +372,15 @@ private class sqlite-driver
     mutable async function close;
         if not (this.is-open;)
             return
+        if this.kind == 'postgres'
+            postgres-native = this.acquire-postgres; 'close'
+            try
+                await postgres-native.close;
+            catch throwable
+                throw postgres-failure; 'close'
+            finally
+                this.finish-close;
+            return
         native = this.acquire; 'close'
         try
             await native.close;
@@ -282,6 +395,8 @@ private class sqlite-driver
         empty map of int, shared ref statement-slot = map;
         this.statements = move empty
         this.native = none
+        this.postgres = none
+        this.transaction-failed = false
         this.busy = false
         this.transaction = false
         this.transaction-known = true
@@ -290,9 +405,9 @@ private class sqlite-driver
         await this.close;
 
 public class connection
-    private driver shared ref sqlite-driver
+    private driver shared ref database-driver
 
-    private function construct; driver shared ref sqlite-driver
+    private function construct; driver shared ref database-driver
         this.driver = driver
 
     function is-open bool;
@@ -326,14 +441,14 @@ public class connection
         await this.driver.close;
 
 public class statement
-    private owner shared ref sqlite-driver
+    private owner shared ref database-driver
     private slot shared ref statement-slot
     private id int = 0
     private names list of string
     private bindings map of string, database-value
     private closed bool = false
 
-    private function construct; owner shared ref sqlite-driver, slot shared ref statement-slot, id int, names list of string
+    private function construct; owner shared ref database-driver, slot shared ref statement-slot, id int, names list of string
         this.owner = owner
         this.slot = slot
         this.id = id
@@ -341,15 +456,15 @@ public class statement
 
     mutable function bind; name string, value database-value
         if this.closed
-            throw database-error; 'statement-closed', 'bind', 'statement is closed'
+            throw this.owner.failure; 'statement-closed', 'bind', 'statement is closed'
         if not (this.owner.is-open;)
-            throw database-error; 'connection-closed', 'bind', 'connection is closed'
+            throw this.owner.failure; 'connection-closed', 'bind', 'connection is closed'
         found bool = false
         for expected in this.names
             if expected == name
                 found = true
         if not found
-            throw database-error; 'unknown-parameter', 'bind', 'binding does not name a parameter in this statement'
+            throw this.owner.failure; 'unknown-parameter', 'bind', 'binding does not name a parameter in this statement'
         this.bindings.set; name, value
 
     mutable function clear-bindings;
@@ -374,6 +489,8 @@ public class statement
         return move result
 
     mutable async function execute execution-result;
+        if this.owner.kind == 'postgres'
+            return await this.execute-postgres;
         arguments = this.parameters;
         owner = this.owner
         native = owner.acquire; 'execute'
@@ -402,6 +519,8 @@ public class statement
             owner.restore; move native
 
     mutable async function query result-set;
+        if this.owner.kind == 'postgres'
+            return await this.query-postgres;
         arguments = this.parameters;
         owner = this.owner
         native = owner.acquire; 'query'
@@ -441,6 +560,89 @@ public class statement
         finally
             owner.restore; move native
 
+    private function parameters-postgres postgres-arguments; prepared ref postgres-statement
+        result = postgres-arguments::default;
+        index int = 0
+        try
+            for name in this.names
+                value = this.bindings.get.checked; name
+                if value != none
+                    expected postgres-type-info|none = none
+                    postgres-parameter-type; prepared, index, ref expected
+                    if expected != none
+                        postgres-bind; ref result, value, ref expected
+                    else
+                        throw this.owner.failure; 'conversion', 'bind', 'PostgreSQL parameter metadata is unavailable'
+                else
+                    throw this.owner.failure; 'missing-parameter', 'execute', 'a named parameter has no binding'
+                index = index + 1
+        catch database-error as failure
+            throw failure
+        catch throwable
+            throw postgres-failure; 'bind'
+        return move result
+
+    private function check-postgres;
+        if this.closed
+            throw this.owner.failure; 'statement-closed', 'execute', 'statement is closed'
+        if not (this.owner.is-open;)
+            throw this.owner.failure; 'connection-closed', 'execute', 'connection is closed'
+
+    private mutable async function execute-postgres execution-result;
+        this.check-postgres;
+        owner = this.owner
+        native = owner.acquire-postgres; 'execute'
+        try
+            prepared = this.slot.take-postgres;
+            try
+                arguments = this.parameters-postgres; ref prepared
+                sql = postgres-statement-sql; ref prepared
+                owner.transaction-known = false
+                result postgres-query-result = await (native-query; sql, move arguments).execute; ref native
+                await owner.refresh-postgres; ref native
+                affected int64 = result.rows_affected;
+                return instance execution-result; affected
+            catch database-error as failure
+                throw failure
+            catch throwable
+                await owner.recover-postgres-state; ref native
+                throw postgres-failure; 'execute'
+            finally
+                this.slot.put-postgres; move prepared
+        finally
+            owner.restore-postgres; move native
+
+    private mutable async function query-postgres result-set;
+        this.check-postgres;
+        owner = this.owner
+        native = owner.acquire-postgres; 'query'
+        try
+            prepared = this.slot.take-postgres;
+            try
+                arguments = this.parameters-postgres; ref prepared
+                sql = postgres-statement-sql; ref prepared
+                owner.transaction-known = false
+                native-records list of postgres-row = await (native-query; sql, move arguments).fetch_all; ref native
+                await owner.refresh-postgres; ref native
+                columns = postgres-columns; ref prepared
+                records list of row = list;
+                first-row bool = true
+                for record in ref native-records
+                    if first-row
+                        columns = postgres-row-columns; record
+                        first-row = false
+                    records.append; (postgres-decode-row; record, columns)
+                return instance result-set; columns, records
+            catch database-error as failure
+                throw failure
+            catch throwable
+                await owner.recover-postgres-state; ref native
+                throw postgres-failure; 'query'
+            finally
+                this.slot.put-postgres; move prepared
+        finally
+            owner.restore-postgres; move native
+
     mutable function close;
         if this.closed
             return
@@ -452,20 +654,27 @@ public class statement
         this.close;
 
 public async function connect shared ref connection; settings config
-    if settings.driver == 'postgres' or settings.driver == 'mysql'
+    if settings.driver == 'mysql'
         throw database-error; 'driver-unavailable', 'connect', 'requested driver is not included in this build', '', settings.driver
-    if settings.driver != 'sqlite'
+    if settings.driver != 'sqlite' and settings.driver != 'postgres'
         throw database-error; 'unknown-driver', 'connect', 'unknown database driver', '', settings.driver
     if settings.database == ''
-        throw database-error; 'configuration', 'connect', 'database path must not be empty'
+        throw database-error; 'configuration', 'connect', 'database path or PostgreSQL DSN must not be empty', '', settings.driver
     try
+        if settings.driver == 'postgres'
+            postgres-settings = postgres-options::from_str; settings.database
+            postgres-native postgres-connection = await postgres-settings.connect;
+            postgres-driver = shared ref (instance database-driver; none, move postgres-native)
+            return shared ref (instance connection; postgres-driver)
         options = native-options::new;
         options = options.filename; settings.database
         options = options.create_if_missing; true
         native native-connection = await options.connect;
-        driver = shared ref (instance sqlite-driver; move native)
+        driver = shared ref (instance database-driver; move native)
         return shared ref (instance connection; driver)
     catch database-error as failure
         throw failure
     catch throwable
+        if settings.driver == 'postgres'
+            throw postgres-failure; 'connect'
         throw database-failure; 'connect'

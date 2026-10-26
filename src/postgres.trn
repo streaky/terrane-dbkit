@@ -1,0 +1,204 @@
+namespace streaky/dbkit
+
+from /core/collections import list
+from /deps/sqlx-core/sql-str import SqlStr as native-sql
+from /deps/sqlx-postgres import PgConnection as postgres-connection, PgStatement as postgres-statement, PgArguments as postgres-arguments, PgRow as postgres-row, PgValue as postgres-value, PgTypeInfo as postgres-type-info
+
+private function postgres-failure database-error; operation string
+    return instance database-error; 'database', operation, 'PostgreSQL operation failed', '', 'postgres'
+
+# SQLx 0.9 does not expose ReadyForQuery status. Its transaction_depth only
+# tracks its own transaction API, not raw BEGIN or failed transactions. Probe
+# through public SQL instead: 25P01=idle, 25P02=failed, success=active. Retire
+# this round-trip boundary when SQLx exposes exact connection transaction status.
+# Never run it in cancellation finalizers: recovery belongs to a live operation.
+# Use the simple protocol so probes do not enter or depend on the user's
+# prepared-statement cache (including when the application deallocates it).
+private async function postgres-transaction-state int32; native ref postgres-connection
+    state int32 = rust
+        let native = &mut *native;
+        use ::sqlx::SqlSafeStr as _;
+        match ::sqlx::raw_sql(::sqlx::AssertSqlSafe("SAVEPOINT dbkit_internal_state_probe").into_sql_str()).execute(&mut *native).await {
+            Ok(_) => match ::sqlx::raw_sql(::sqlx::AssertSqlSafe("RELEASE SAVEPOINT dbkit_internal_state_probe").into_sql_str()).execute(&mut *native).await {
+                Ok(_) => 1,
+                Err(_) => -1,
+            },
+            Err(::sqlx::Error::Database(error)) => match error.code().as_deref() {
+                Some("25P01") => 0,
+                Some("25P02") => 2,
+                _ => -1,
+            },
+            Err(_) => -1,
+        }
+    if state < 0
+        throw postgres-failure; 'transaction-state'
+    return state
+
+# Borrowed SQLx metadata/usize indices are not yet directly expressible. Each
+# bridge returns owned primitive metadata or a checked optional value, not a DB
+# facade. Retire with projected borrowed slice/ordinal support.
+private function postgres-statement-sql native-sql; prepared ref postgres-statement
+    value native-sql = rust
+        ::sqlx::Statement::sql(prepared).clone()
+    return value
+
+private function postgres-columns list of string; prepared ref postgres-statement
+    columns list of string = rust
+        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
+    return columns
+
+private function postgres-row-columns list of string; record ref postgres-row
+    columns list of string = rust
+        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
+    return columns
+
+private function postgres-parameter-type; prepared ref postgres-statement, index int, value ref (postgres-type-info|none)
+    rust
+        let value = &mut *value;
+        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Statement::parameters(prepared).and_then(|parameters| parameters.left()).and_then(|types| types.get(index))).cloned();
+
+private function postgres-type-name string; value ref postgres-type-info
+    name string = rust
+        ::sqlx::TypeInfo::name(value).to_owned()
+    return name
+
+private function postgres-read-value; record ref postgres-row, index int, value ref (postgres-value|none)
+    rust
+        let value = &mut *value;
+        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
+
+private function postgres-value-kind string; value ref postgres-value
+    kind string = rust
+        ::sqlx::TypeInfo::name(::sqlx::Value::type_info(value).as_ref()).to_owned()
+    return kind
+
+private function postgres-cell database-value; value database-value
+    value.postgres-origin = true
+    return move value
+
+private function postgres-decode-value database-value; value postgres-value
+    if value.is_null;
+        return postgres-cell; (null-value;)
+    kind = postgres-value-kind; ref value
+    switch kind
+        case 'BOOL'
+            boolean bool = value.try_decode;
+            return postgres-cell; (bool-value; boolean)
+        case 'INT2'
+            small int16 = value.try_decode;
+            return postgres-cell; (integer-value; small)
+        case 'INT4'
+            ordinary int32 = value.try_decode;
+            return postgres-cell; (integer-value; ordinary)
+        case 'INT8'
+            wide int64 = value.try_decode;
+            return postgres-cell; (integer-value; wide)
+        case 'FLOAT4'
+            narrow float32 = value.try_decode;
+            return postgres-cell; (real-value; narrow)
+        case 'FLOAT8'
+            real float64 = value.try_decode;
+            return postgres-cell; (real-value; real)
+        case 'TEXT', 'VARCHAR', 'CHAR', 'NAME'
+            text string = value.try_decode;
+            return postgres-cell; (text-value; text)
+        case 'BYTEA'
+            data bytes = value.try_decode;
+            return postgres-cell; (bytes-value; data)
+    throw database-error; 'conversion', 'read-value', 'unsupported PostgreSQL value type', '', 'postgres'
+
+private function postgres-decode-row row; record ref postgres-row, columns list of string
+    cells list of database-value = list;
+    index int = 0
+    while index < columns.length
+        value postgres-value|none = none
+        postgres-read-value; record, index, ref value
+        if value != none
+            cells.append; (postgres-decode-value; move value)
+        else
+            throw database-error; 'column-not-found', 'read-value', 'column index is unavailable', '', 'postgres'
+        index = index + 1
+    result = instance row; columns, cells
+    result.postgres-origin = true
+    return move result
+
+# Encode SQL NULL with the parameter's server-described type, including custom
+# types. A fixed Option<i64> silently supplies the wrong parse type for text/bool.
+# Retire when native dynamic typed-null encoding has a projected public surface.
+private function postgres-bind-null; arguments ref postgres-arguments, expected ref postgres-type-info
+    rust
+        let arguments = &mut *arguments;
+        struct TypedNull(::sqlx::postgres::PgTypeInfo);
+        impl ::sqlx::Type<::sqlx::Postgres> for TypedNull {
+            fn type_info() -> ::sqlx::postgres::PgTypeInfo {
+                ::sqlx::postgres::PgTypeInfo::with_oid(::sqlx::postgres::types::Oid(0))
+            }
+        }
+        impl<'q> ::sqlx::Encode<'q, ::sqlx::Postgres> for TypedNull {
+            fn encode_by_ref(&self, _: &mut ::sqlx::postgres::PgArgumentBuffer) -> Result<::sqlx::encode::IsNull, ::sqlx::error::BoxDynError> {
+                Ok(::sqlx::encode::IsNull::Yes)
+            }
+            fn produces(&self) -> Option<::sqlx::postgres::PgTypeInfo> {
+                Some(self.0.clone())
+            }
+        }
+        ::sqlx::Arguments::add(arguments, TypedNull(expected.clone())).expect("typed SQL NULL has an infallible encoder");
+
+private function postgres-narrow-real float32; value float64
+    result float32 = rust
+        value as f32
+    valid bool = rust
+        !value.is_finite() || result.is_finite()
+    if not valid
+        throw database-error; 'conversion', 'bind', 'real is outside PostgreSQL REAL range', '', 'postgres'
+    return result
+
+private function postgres-bind; arguments ref postgres-arguments, value database-value, expected ref postgres-type-info
+    if value.is-null;
+        postgres-bind-null; ref arguments, expected
+        return
+    kind = postgres-type-name; expected
+    switch value.kind
+        case 'integer'
+            integer = value.as-integer;
+            switch kind
+                case 'INT2'
+                    if integer < -32768 or integer > 32767
+                        throw database-error; 'conversion', 'bind', 'integer is outside PostgreSQL SMALLINT range', '', 'postgres'
+                    small int16 = integer
+                    arguments.add; small
+                    return
+                case 'INT4'
+                    if integer < -2147483648 or integer > 2147483647
+                        throw database-error; 'conversion', 'bind', 'integer is outside PostgreSQL INTEGER range', '', 'postgres'
+                    ordinary int32 = integer
+                    arguments.add; ordinary
+                    return
+                case 'INT8'
+                    arguments.add; integer
+                    return
+        case 'real'
+            real = value.as-real;
+            if kind == 'FLOAT8'
+                arguments.add; real
+                return
+            if kind == 'FLOAT4'
+                narrow = postgres-narrow-real; real
+                arguments.add; narrow
+                return
+        case 'bool'
+            if kind == 'BOOL'
+                boolean = value.as-bool;
+                arguments.add; boolean
+                return
+        case 'text'
+            if kind == 'TEXT' or kind == 'VARCHAR' or kind == 'CHAR' or kind == 'NAME'
+                text = value.take-text;
+                arguments.add; move text
+                return
+        case 'bytes'
+            if kind == 'BYTEA'
+                data = value.take-bytes;
+                arguments.add; move data
+                return
+    throw database-error; 'conversion', 'bind', 'database value does not match PostgreSQL parameter type', '', 'postgres'

@@ -1,0 +1,156 @@
+namespace app/concurrency
+
+from /core/time import clock, duration
+from /streaky/dbkit import config, connect, connection, statement, database-error, error-details, integer-value
+from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
+
+async function postgres-integer int64; database shared ref connection, source string
+    rows = await database.query; source
+    record = rows.fetch;
+    if record != none
+        return (record.get; 0).as-integer;
+    throw scenario-failure
+
+async function await-postgres-lock; observer shared ref connection, pid int64
+    waiting = await observer.prepare; 'SELECT EXISTS(SELECT FROM pg_stat_activity WHERE pid = :pid AND state = \'active\' AND wait_event_type = \'Lock\' AND wait_event = \'advisory\')'
+    waiting.bind; 'pid', (integer-value; pid)
+    try
+        attempts int = 0
+        while attempts < 500
+            rows = await waiting.query;
+            record = rows.fetch;
+            if record != none
+                if (record.get; 0).as-bool;
+                    return
+            attempts = attempts + 1
+            await clock::sleep; (duration::nanoseconds; 10000000)
+        throw scenario-failure
+    finally
+        waiting.close;
+
+function assert-postgres-state-unknown; database shared ref connection
+    unknown bool = false
+    try
+        database.in-transaction;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'transaction-state-unknown'
+        assert-equal-string; (error-details; failure).driver, 'postgres'
+        unknown = true
+    assert-equal-bool; unknown, true
+
+async function commit-postgres int; database shared ref connection
+    await database.commit;
+    return 1
+
+async function cancel-postgres-commit; database shared ref connection, observer shared ref connection, pid int64
+    missing = await database.prepare; 'SELECT :missing::INTEGER'
+    group = task-group; int
+    group.spawn; (commit-postgres; database)
+    try
+        await await-postgres-lock; observer, pid
+        assert-postgres-state-unknown; database
+        group.cancel;
+    finally
+        try
+            await observer.execute; 'SELECT pg_advisory_unlock(1717920812)'
+        finally
+            outcomes = await group.drain;
+            assert-equal-bool; outcomes[0].cancelled, true
+    assert-postgres-state-unknown; database
+    locally-rejected bool = false
+    try
+        await missing.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, 'missing-parameter'
+        locally-rejected = true
+    assert-equal-bool; locally-rejected, true
+    assert-postgres-state-unknown; database
+    missing.close;
+    # Draining the pending protocol must refresh the now-committed state.
+    assert-equal-int; (await postgres-integer; database, 'SELECT 7::BIGINT'), 7
+    assert-equal-bool; (database.in-transaction;), false
+    assert-equal-int; (await postgres-integer; observer, 'SELECT COUNT(*) FROM dbkit_pg_commit'), 1
+
+public async function postgres-control-cancellation-scenario; dsn string
+    database = await connect; (instance config; 'postgres', dsn)
+    observer = await connect; (instance config; 'postgres', dsn)
+    try
+        pid = await postgres-integer; database, 'SELECT pg_backend_pid()::BIGINT'
+        await database.execute; 'DROP TABLE IF EXISTS dbkit_pg_commit'
+        await database.execute; 'CREATE TABLE dbkit_pg_commit (value BIGINT)'
+        await database.execute; 'CREATE OR REPLACE FUNCTION dbkit_pg_deferred_commit() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(1717920812); RETURN NEW; END $$'
+        await database.execute; 'CREATE CONSTRAINT TRIGGER dbkit_pg_commit_gate AFTER INSERT ON dbkit_pg_commit DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION dbkit_pg_deferred_commit()'
+        await observer.execute; 'SELECT pg_advisory_lock(1717920812)'
+        await database.begin;
+        await database.execute; 'INSERT INTO dbkit_pg_commit VALUES (1)'
+        await cancel-postgres-commit; database, observer, pid
+    finally
+        await observer.close;
+        await database.close;
+    print; 'postgres-control-cancel=true'
+
+async function use-postgres-wrapper int; prepared shared ref statement, execute bool
+    if execute
+        result = await prepared.execute;
+        assert-equal-int; result.affected, 1
+        return 23
+    rows = await prepared.query;
+    record = rows.fetch;
+    if record != none
+        assert-equal-int; ((record.get; 0).as-integer;), 23
+        return 23
+    throw scenario-failure
+
+async function expect-wrapper-error; prepared shared ref statement, code string
+    rejected bool = false
+    try
+        await prepared.query;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, code
+        rejected = true
+    assert-equal-bool; rejected, true
+    rejected = false
+    try
+        await prepared.execute;
+    catch database-error as failure
+        assert-equal-string; (error-details; failure).code, code
+        rejected = true
+    assert-equal-bool; rejected, true
+
+async function check-postgres-wrapper-busy; prepared shared ref statement, observer shared ref connection, pid int64, execute bool
+    group = task-group; int
+    group.spawn; (use-postgres-wrapper; prepared, execute)
+    try
+        await await-postgres-lock; observer, pid
+        await expect-wrapper-error; prepared, 'connection-busy'
+    finally
+        try
+            await observer.execute; 'SELECT pg_advisory_unlock(1717920813)'
+        finally
+            outcomes = await group.drain;
+            assert-equal-bool; outcomes[0].completed, true
+
+async function postgres-wrapper-busy-once; dsn string, execute bool
+    database = await connect; (instance config; 'postgres', dsn)
+    observer = await connect; (instance config; 'postgres', dsn)
+    try
+        pid = await postgres-integer; database, 'SELECT pg_backend_pid()::BIGINT'
+        heavy = await database.prepare; 'SELECT 23::BIGINT FROM pg_advisory_xact_lock(1717920813)'
+        await observer.execute; 'SELECT pg_advisory_lock(1717920813)'
+        await check-postgres-wrapper-busy; heavy, observer, pid, execute
+        rows = await heavy.query;
+        record = rows.fetch;
+        if record != none
+            assert-equal-int; ((record.get; 0).as-integer;), 23
+        else
+            throw scenario-failure
+        heavy.close;
+        await expect-wrapper-error; heavy, 'statement-closed'
+    finally
+        await observer.close;
+        await database.close;
+
+public async function postgres-wrapper-busy-scenario; dsn string
+    await postgres-wrapper-busy-once; dsn, false
+    await postgres-wrapper-busy-once; dsn, true
+    print; 'postgres-wrapper-busy=true'

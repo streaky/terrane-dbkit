@@ -13,23 +13,271 @@ documentation:
   status: complete
   title: PostgreSQL
   title-style: text
-  summary: The reserved PostgreSQL driver name and its current unavailability.
+  summary: PostgreSQL connections, typed parameters and values, transactions, cancellation, and the managed integration-test stack.
   tags: [database, drivers, postgresql]
   blocks:
     - type: markdown
       markdown: |-
-        PostgreSQL is not implemented in the current dbkit release. The reserved
-        configuration name is `postgres`, not `postgresql`. Selecting it raises
-        `driver-unavailable` before a connection is opened; it is not included in
-        `available-drivers` and does not fall back to SQLite.
+        Select `postgres` through the common `/streaky/dbkit` API. SQLx 0.9 supplies
+        the concrete PostgreSQL connection, preparation and execution runtime;
+        native connections remain private. `available-drivers` includes `postgres`.
+        The configuration name is not `postgresql`, and selection never falls back
+        to SQLite. No pool, ORM, query builder or database-shaped Rust facade is
+        introduced. See [[dbkit.api.database]] for shared handle and result contracts.
+  sections:
+    - id: configuration
+      title: Connection configuration
+      blocks:
+        - type: markdown
+          markdown: |-
+            The `database` setting is a PostgreSQL connection URL understood by
+            SQLx, normally starting with `postgres://` or `postgresql://`. Supply
+            the desired host, port, database, user and authentication settings;
+            SQLite filenames and `:memory:` are not PostgreSQL databases.
+            Applications grant `build`, `filesystem`, `threads` and `networking`
+            capabilities and use the threaded executor.
 
-        No PostgreSQL DSN, credentials, transport, TLS, pooling, value mapping, or
-        placeholder-translation contract is exposed. This page records current
-        availability, not a simulated driver or a committed implementation plan.
-        Do not infer PostgreSQL behavior from the SQLite driver's settings or SQL
-        scanner. See [[dbkit.drivers]] for the support matrix and
-        [[dbkit.drivers.sqlite]] for the implemented driver.
-  sections: []
+            The SQLx build enables Rustls with ring and native certificate roots.
+            SQLx's default TLS mode is `prefer`, which can fall back to plaintext;
+            use `sslmode=verify-full` when encryption and hostname/certificate
+            verification are required. The local test stack uses a loopback-only
+            published port and no server TLS. No live TLS certificate exchange is
+            part of that stack's coverage.
+
+            Treat URLs and credentials as secrets. Structured dbkit error fields
+            do not include them, but native throwable causes are diagnostic data,
+            not a sanitized client response. See [[dbkit.api.database#errors]].
+        - type: example
+          id: postgres-connection-helper
+          title: Open a PostgreSQL connection from application configuration
+          language: terrane
+          mode: illustrative
+          target: null
+          timeout-ms: null
+          source: |-
+            from /streaky/dbkit import config, connect, connection
+
+            async function open-postgres shared ref connection; dsn string
+                return await connect; (instance config; 'postgres', dsn)
+          response: null
+          diagnostic: null
+          markdown: null
+    - id: parameters
+      title: Named parameters and native SQL
+      blocks:
+        - type: markdown
+          markdown: |-
+            Bind ASCII `:name` parameters through ordinary dbkit statements: a
+            letter or underscore, then letters, digits or underscores. Each
+            occurrence becomes a native positional parameter, `$1`, `$2`, and so
+            on, in source order. Repeated names use the same retained binding for
+            each occurrence. Values are encoded, never interpolated into SQL.
+
+            The PostgreSQL scanner recognizes single/double quoted regions,
+            doubled delimiters, explicit `E` escape strings, tagged or untagged
+            dollar strings, line comments and nested block comments. It preserves
+            `::` casts, array slices, PostgreSQL identifier dollar characters and
+            JSON operators such as `?` and `@>`. Named parameters inside quoted
+            regions or comments are not bindings. Standard strings assume the
+            server's default `standard_conforming_strings = on`; use explicit
+            escape strings for backslash escapes. Native `$1` parameters, SQL NUL,
+            unterminated regions and multiple statements are rejected. A body
+            inside a dollar string can contain semicolons.
+
+            In the immediate bracket context, a colon after a completed lower-bound
+            expression is a slice separator. Parenthesized expressions and
+            subqueries have their own context: `WHERE :flag`, `LIMIT :n` and
+            `OFFSET :skip` still bind inside an array expression. Nested brackets
+            restore slice context, and a colon after a completed parenthesized
+            lower bound remains a separator. Operand-position `:name` remains a
+            binding, including array elements and subscripts. Write
+            `arr[lo: :upper]` to bind an upper bound without confusing the separator
+            with a `::` cast. The existing `arr[:index]` spelling binds an index;
+            write `arr[: hi]` for an omitted lower bound and identifier upper bound.
+
+            PostgreSQL describes parameter types during preparation, before dbkit
+            values are bound. Give ambiguous parameters a schema context or an
+            explicit type, for example `SELECT :id::BIGINT`. A bare selected
+            parameter may be described as text; dbkit does not reinterpret it as
+            an integer later. Bind a factory compatible with the described type.
+            If SQL needs further conversion, first cast the parameter to its
+            supported input type. This is driver-neutral access, not portable SQL
+            or SQLite-style dynamic parameter typing.
+
+            Repeated wrapper execution uses SQLx's ordinary prepared execution
+            cache. Each explicit `prepare` first clears the connection's native
+            statement cache, so re-preparing on that same connection obtains fresh
+            result and parameter metadata after schema/type changes, including
+            empty results. This evicts other native cached plans and adds protocol
+            work; it does not invalidate their dbkit wrappers, but old wrappers may
+            retain stale metadata and should be replaced after a migration.
+            Coordinate migrations with active work. An old execution can still
+            fail with a cached-plan error: dbkit never silently retries or replays
+            SQL. Prepare a new wrapper before retrying work known to be safe to
+            retry. SQLite's schema pragmas and non-persistent execution workaround
+            do not run against PostgreSQL.
+            Roll back first if the earlier error left the transaction aborted.
+    - id: values
+      title: Supported values and conversions
+      blocks:
+        - type: markdown
+          markdown: |-
+            SQL null decodes as `null`, including nulls of otherwise unsupported
+            PostgreSQL types. Typed null bindings use the server-described
+            parameter type, not a fixed integer-null encoder.
+
+            Supported non-null fetch types are `BOOL` as dbkit `bool`;
+            `INT2`, `INT4` and `INT8` as signed `int64` integers;
+            `FLOAT4` and `FLOAT8` as `float64` reals;
+            `TEXT`, `VARCHAR`, `CHAR(n)` (PostgreSQL `bpchar`) and `NAME` as text;
+            and `BYTEA` as bytes. SQLx reports fixed-width text as `CHAR`; the
+            distinct internal single-byte PostgreSQL `"char"` is not text.
+            Booleans remain booleans, unlike SQLite's integer storage mapping.
+
+            Integer bindings to `SMALLINT` and `INTEGER` are range-checked before
+            narrowing. An out-of-range value raises `conversion`, with operation
+            `bind`, and the statement remains reusable. `REAL` bindings round to
+            PostgreSQL single precision; a finite value overflowing that range
+            raises `conversion`. Use finite reals for portable supported behavior.
+            There is no implicit conversion between text, bool, integer, real or
+            bytes factories.
+
+            Reported non-null types outside this mapping raise `conversion`
+            instead of being silently stringified. There are no automatic
+            NUMERIC, UUID, JSON/JSONB, array, date/time or domain-specific codecs.
+            dbkit follows native result type metadata, not schema introspection.
+            Cast a result explicitly to a supported type when that representation
+            is what the application wants. Buffered names and values retain
+            PostgreSQL error provenance after the connection closes.
+    - id: transactions
+      title: Transaction state and failed transactions
+      blocks:
+        - type: markdown
+          markdown: |-
+            The common `begin`, `commit`, `rollback` and `in-transaction` API
+            reflects raw transaction SQL as well as operations issued through
+            dbkit. A failed statement inside a transaction leaves it active but
+            aborted. Roll it back before doing more work. PostgreSQL otherwise
+            acknowledges `COMMIT` of an aborted transaction by rolling it back;
+            dbkit's `commit` method performs that cleanup but raises
+            `transaction-failed` with an aborted/rolled-back detail instead of
+            reporting a successful commit. The connection is then known idle.
+            This is a dbkit-owned error category, not a native SQLSTATE.
+            Raw SQL retains PostgreSQL's own command semantics.
+
+            SQLx 0.9 does not publicly expose exact ReadyForQuery transaction
+            status. Its transaction-depth counter does not cover raw SQL and
+            aborted states. A narrow live-operation bridge uses the uncached
+            simple protocol for a fixed `SAVEPOINT` probe: SQLSTATE `25P01` means
+            idle, `25P02` means aborted, and success means active and is followed
+            by `RELEASE SAVEPOINT`. Unexpected failures are errors, not guessed
+            state; probes do not enter the application's prepared-statement cache.
+
+            This deliberately adds protocol round trips. Idle and aborted probes
+            also produce the corresponding expected server-side errors, which can
+            appear in PostgreSQL logs/statistics. The probe is not a retry or a
+            user-visible nested transaction helper. Replace it when SQLx exposes
+            exact status through a supported public API, retaining raw/failed
+            transaction regressions. Do not inspect private SQLx layouts or infer
+            state from a separate counter.
+
+            Recovery probing after a native operation error is best-effort. If
+            that probe also fails, state stays unknown and the original operation
+            label and native cause survive; the secondary inspection failure does
+            not replace them. A standalone inspection failure still reports
+            `database` at `transaction-state` rather than guessing a boolean.
+    - id: cancellation
+      title: Sharing, cancellation and close
+      blocks:
+        - type: markdown
+          markdown: |-
+            One operation owns the connection lease. Concurrent operations fail
+            with `connection-busy`, rather than queueing. Finalizers restore
+            native ownership and release that lease synchronously, without a
+            protocol query or native await.
+
+            While a lease is active, `in-transaction` raises
+            `transaction-state-unknown`. A local pre-I/O rejection, such as missing
+            bindings, an invalid parameter kind/range or a closed statement slot,
+            preserves the previously known or unknown observation when the lease
+            is released; it sends no recovery query merely to validate arguments.
+            Once native I/O starts, cancellation leaves state unknown until a live
+            operation refreshes it. SQLx can leave server work pending when a
+            future is cancelled; recovery can wait for that work to finish.
+            dbkit does not send a PostgreSQL query-cancel request or provide a
+            per-query timeout API.
+            Cancellation does not imply rollback: a cancelled `commit` may still
+            finish on the server. Transaction-control operations also invalidate
+            their pre-command state before awaiting the command; recovery must
+            inspect fresh state rather than return that earlier observation.
+
+            Explicit close invalidates registered statements and closes the native
+            connection; the server rolls back an uncommitted transaction on
+            disconnect. Last-owner cleanup also releases it. Buffered results
+            remain independent of connection/statement lifetime. Closing unrelated
+            or active statement wrappers never revives their closed metadata slots.
+    - id: testing
+      title: Managed PostgreSQL integration tests
+      blocks:
+        - type: markdown
+          markdown: |-
+            Use the repository test runner on a Linux host with Python 3, Docker
+            Engine and Docker Compose available. It runs dbkit unit tests, SQLite
+            integration and PostgreSQL integration by default. `--postgres-only`
+            selects the PostgreSQL suite
+            while keeping the same reset and cleanup rules. `--terrane` overrides
+            the compiler path; the `TERRANE` environment variable is also accepted.
+
+            The stack uses `postgres:18-bookworm`, a TCP health check for the final
+            server (not its temporary initialization socket), and a dynamically
+            allocated loopback port. Data is bind-mounted from the fixed ignored
+            `packages/dbkit/tests/.state/postgres` directory to
+            `/var/lib/postgresql`, with the PostgreSQL 18 cluster beneath it. This
+            is a dedicated disposable test database, never a production data path.
+
+            At the start of every managed run the runner takes its checkout-local
+            lock, stops its path-derived Compose project, and clears the contents
+            of that dedicated bind directory before starting a fresh cluster.
+            Symlink/noncanonical state paths are rejected; there is no arbitrary
+            data-directory override. A root reset helper from the same PostgreSQL
+            image can remove files owned by the database UID. If stopping the
+            stack fails, no data reset occurs.
+
+            At the end, including failed builds/tests and signals, it stops the
+            stack but leaves database files for inspection. PID-directed INT and
+            TERM interrupt owned commands and reap their process trees, including
+            detached-session orphans, through a Linux child subreaper. Cancellation
+            or direct-child exit starts a one-second TERM grace period, followed
+            by KILL for remaining descendants; ordinary command work has no new
+            timeout. Repeated terminal INT/TERM are ignored throughout exit
+            cleanup, including by the helper and Compose command. The checkout
+            lock stays held until descendants are reaped and stack shutdown
+            finishes. The next managed run destroys retained files at its start.
+
+            Direct invocation of `tests/test_postgres.py` requires an explicit
+            `DBKIT_POSTGRES_DSN` naming a dedicated test database. It does not
+            manage or erase cluster storage, but scenarios drop, recreate or
+            truncate fixed tables in the `dbkit_pg_*` namespace and replace their
+            prior inspection data. Do not point it at production or other data
+            that must survive fixture execution.
+
+            The separate `tests/test_runner.py` suite exercises runner status,
+            PID-directed signals, descendant reaping and lock ownership with
+            isolated command stand-ins; it never starts Docker or touches the
+            retained database directory.
+        - type: example
+          id: run-postgres-test-stack
+          title: Run from the Terrane repository root
+          language: console
+          mode: illustrative
+          target: null
+          timeout-ms: null
+          source: |-
+            packages/dbkit/tests/run_tests.sh -v
+            packages/dbkit/tests/run_tests.sh --postgres-only --terrane target/release/terrane -v
+          response: null
+          diagnostic: null
+          markdown: null
   see-also:
     - dbkit.drivers
     - dbkit.api.database

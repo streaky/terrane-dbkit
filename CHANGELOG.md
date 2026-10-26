@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Added concrete SQLx 0.9 PostgreSQL support through the existing driver-neutral
+  connection, statement, value, result and structured-error API. Includes
+  PostgreSQL-aware named SQL, typed nulls, checked integer/REAL parameters, strict
+  native value mappings, raw/failed transaction state and cancellation recovery.
+  The package profile now also requires `networking`.
+- Added a PostgreSQL 18 Compose test stack with a dedicated bind mount. Managed
+  runs stop the stack and clear old test data at the start, then retain database
+  files after success or failure for inspection. SQLite coverage remains in the
+  default managed run.
+- Corrected transaction-control cancellation state, fixed-width PostgreSQL text
+  conversion and concurrent reuse of the same prepared wrapper. Added real
+  server-synchronized regressions for pending COMMIT and query/execute leases.
+- Preserved identifier/expression array slice bounds while retaining named
+  bindings inside PostgreSQL array expressions; documented ambiguous colon forms.
+- Gated Compose readiness on TCP startup, forwarded runner-PID signals to owned
+  command groups, and reaped descendants before cleanup/lock release. Corrected
+  direct-harness data-preservation claims and made the missing-column scenario
+  independent of pre-existing fixture tables.
+- Made explicit PostgreSQL re-preparation clear native cached plans so fresh
+  metadata is available on the same connection after schema/type changes,
+  without automatically replaying SQL.
+- Preserved known transaction observations for pre-I/O validation failures and
+  original native operation errors when recovery probing also fails. Method
+  COMMIT of an aborted transaction now reports `transaction-failed`.
+- Scoped PostgreSQL slice lexing to its immediate delimiter context, preserving
+  bindings in parenthesized scalar expressions and subqueries.
+- Protected exit cleanup from repeated signals and bounded descendant shutdown
+  with TERM/KILL escalation after cancellation or command exit. Added meaningful
+  start-reset/end-retention and stubborn/detached-orphan regressions.
+- Regenerated the package dependency lock to keep package-root check/test runs
+  stable; restored consistent PostgreSQL Python test spacing.
+
 - Refactored SQL scanner byte dispatch into a switch while preserving quote,
   comment, parameter, and statement-termination behavior; covered ordinary
   minus/slash characters and their rejection after a statement terminator.

@@ -79,7 +79,7 @@ private function postgres-cell database-value; value database-value
 private function postgres-decode-value database-value; value postgres-value
     if value.is_null;
         return postgres-cell; (null-value;)
-    kind = postgres-value-kind; ref value
+    kind = postgres-value-kind; value
     switch kind
         case 'BOOL'
             boolean bool = value.try_decode;
@@ -112,7 +112,7 @@ private function postgres-decode-row row; record ref postgres-row, columns list 
     index int = 0
     while index < columns.length
         value postgres-value|none = none
-        postgres-read-value; record, index, ref value
+        postgres-read-value; record, index, value
         if value != none
             cells.append; (postgres-decode-value; move value)
         else
@@ -155,7 +155,7 @@ private function postgres-narrow-real float32; value float64
 
 private function postgres-bind; arguments ref postgres-arguments, value database-value, expected ref postgres-type-info
     if value.is-null;
-        postgres-bind-null; ref arguments, expected
+        postgres-bind-null; arguments, expected
         return
     kind = postgres-type-name; expected
     switch value.kind

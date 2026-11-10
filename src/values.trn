@@ -38,7 +38,7 @@ private function error-field string; value document-value, key string
         throw coercion-error
     return field.value.scalar
 
-public function error-details database-error; error throwable
+public function error-details database-error; error ref throwable
     parsed = parse-json; error.message, (default-json-options;)
     if parsed.failed
         throw coercion-error

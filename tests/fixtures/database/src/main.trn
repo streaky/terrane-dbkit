@@ -7,8 +7,11 @@ from /streaky/dbkit import config, connect, connection, statement, database-valu
 from /app/assertions import scenario-failure, assert-equal-int, assert-equal-string, assert-equal-bool
 from /app/concurrency import concurrency-scenario, postgres-cancellation-scenario, postgres-control-cancellation-scenario, postgres-wrapper-busy-scenario
 
-function report; failure throwable
+function report; failure ref throwable
     details = error-details; failure
+    repeated = error-details; failure
+    assert-equal-string; details.code, repeated.code
+    assert-equal-string; details.detail, repeated.detail
     print; details.code
 
 async function scalar database-value; database shared ref connection, sql string

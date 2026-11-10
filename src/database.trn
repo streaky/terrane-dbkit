@@ -1,11 +1,20 @@
 namespace streaky/dbkit
 
-from /core/collections import list, map
+from /core/collections import
+    list, map
 from /core/errors import throwable
 from /deps/sqlx-core/query import query_with as native-query
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
-from /deps/sqlx-sqlite import SqliteConnectOptions as native-options, SqliteConnection as native-connection, SqliteStatement as native-statement, SqliteArguments as native-arguments, SqliteRow as native-row, SqliteValue as native-value, SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
-from /deps/sqlx-postgres import PgConnectOptions as postgres-options, PgConnection as postgres-connection, PgStatement as postgres-statement, PgArguments as postgres-arguments, PgRow as postgres-row, PgTypeInfo as postgres-type-info, PgQueryResult as postgres-query-result
+from /deps/sqlx-sqlite import
+    SqliteConnectOptions as native-options, SqliteConnection as native-connection,
+    SqliteStatement as native-statement, SqliteArguments as native-arguments,
+    SqliteRow as native-row, SqliteValue as native-value,
+    SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
+from /deps/sqlx-postgres import
+    PgConnectOptions as postgres-options, PgConnection as postgres-connection,
+    PgStatement as postgres-statement, PgArguments as postgres-arguments,
+    PgRow as postgres-row, PgTypeInfo as postgres-type-info,
+    PgQueryResult as postgres-query-result
 
 public class config
     driver string = 'sqlite'
@@ -43,7 +52,7 @@ private function row-columns list of string; record ref native-row
         terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
     return columns
 
-private function read-row-value; record ref native-row, index int, value ref (native-value|none)
+private function read-row-value; record ref native-row, index int, value mutable ref (native-value|none)
     rust
         let value = &mut *value;
         *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
@@ -62,7 +71,7 @@ private function value-kind string; value ref native-value
 
 # SQLx transaction depth does not track raw BEGIN/COMMIT or implicit SQLite
 # rollback. Inspect the actual connection while its worker is exclusively locked.
-private async function transaction-state bool; native ref native-connection
+private async function transaction-state bool; native mutable ref native-connection
     state int32 = unsafe rust
         let native = &mut *native;
         match native.lock_handle().await {
@@ -101,7 +110,7 @@ private function decode-row row; record ref native-row, columns list of string
         index = index + 1
     return instance row; columns, cells
 
-private function bind-native; arguments ref native-arguments, value database-value
+private function bind-native; arguments mutable ref native-arguments, value database-value
     switch value.kind
         case 'null'
             absent int64|none = none
@@ -216,14 +225,14 @@ private class database-driver
         this.postgres = move native
         this.busy = false
 
-    private mutable async function refresh-postgres; native ref postgres-connection
+    private mutable async function refresh-postgres; native mutable ref postgres-connection
         this.transaction-known = false
         state = await postgres-transaction-state; native
         this.transaction = state != 0
         this.transaction-failed = state == 2
         this.transaction-known = true
 
-    private mutable async function recover-postgres-state; native ref postgres-connection
+    private mutable async function recover-postgres-state; native mutable ref postgres-connection
         # Probe recovery must not replace the caller's original native error.
         try
             await this.refresh-postgres; native
@@ -249,7 +258,9 @@ private class database-driver
             fence-text = 'PRAGMA table_list'
             fence-sql = checked-sql; fence-text
             fence-arguments = native-arguments::default;
-            await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; native
+            await native-query; fence-sql, move fence-arguments
+                .persistent; false
+                .execute; native
             await native.clear_cached_statements;
             sql = checked-sql; plan.sql
             types list of native-type-info = list;
@@ -315,7 +326,8 @@ private class database-driver
             sql = checked-sql; text
             arguments = postgres-arguments::default;
             this.transaction-known = false
-            await (native-query; sql, move arguments).execute; native
+            await native-query; sql, move arguments
+                .execute; native
             await this.refresh-postgres; native
             if operation == 'commit' and failed
                 # PostgreSQL acknowledges an aborted COMMIT by rolling back.
@@ -356,7 +368,8 @@ private class database-driver
                 throw database-error; 'no-transaction', operation, 'connection has no active transaction'
             sql = checked-sql; text
             arguments = native-arguments::default;
-            await (native-query; sql, move arguments).execute; native
+            await native-query; sql, move arguments
+                .execute; native
             this.transaction = await transaction-state; native
             this.transaction-known = true
         catch database-error as failure
@@ -500,9 +513,13 @@ public class statement
                 fence-text = 'PRAGMA table_list'
                 fence-sql = checked-sql; fence-text
                 fence-arguments = native-arguments::default;
-                await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; native
+                await native-query; fence-sql, move fence-arguments
+                    .persistent; false
+                    .execute; native
                 sql = statement-sql; prepared
-                result native-query-result = await ((native-query; sql, move arguments).persistent; false).execute; native
+                result native-query-result = await native-query; sql, move arguments
+                    .persistent; false
+                    .execute; native
                 owner.transaction = await transaction-state; native
                 owner.transaction-known = true
                 affected int64 = result.rows_affected;
@@ -530,10 +547,14 @@ public class statement
                 fence-text = 'PRAGMA table_list'
                 fence-sql = checked-sql; fence-text
                 fence-arguments = native-arguments::default;
-                await ((native-query; fence-sql, move fence-arguments).persistent; false).execute; native
+                await native-query; fence-sql, move fence-arguments
+                    .persistent; false
+                    .execute; native
                 await native.clear_cached_statements;
                 sql = statement-sql; prepared
-                native-records list of native-row = await ((native-query; sql, move arguments).persistent; false).fetch_all; native
+                native-records list of native-row = await native-query; sql, move arguments
+                    .persistent; false
+                    .fetch_all; native
                 columns list of string = list;
                 if native-records.length == 0
                     types list of native-type-info = list;
@@ -598,7 +619,8 @@ public class statement
                 arguments = this.parameters-postgres; prepared
                 sql = postgres-statement-sql; prepared
                 owner.transaction-known = false
-                result postgres-query-result = await (native-query; sql, move arguments).execute; native
+                result postgres-query-result = await native-query; sql, move arguments
+                    .execute; native
                 await owner.refresh-postgres; native
                 affected int64 = result.rows_affected;
                 return instance execution-result; affected
@@ -622,7 +644,8 @@ public class statement
                 arguments = this.parameters-postgres; prepared
                 sql = postgres-statement-sql; prepared
                 owner.transaction-known = false
-                native-records list of postgres-row = await (native-query; sql, move arguments).fetch_all; native
+                native-records list of postgres-row = await native-query; sql, move arguments
+                    .fetch_all; native
                 await owner.refresh-postgres; native
                 columns = postgres-columns; prepared
                 records list of row = list;

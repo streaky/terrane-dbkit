@@ -2,7 +2,10 @@ namespace streaky/dbkit
 
 from /core/collections import list
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
-from /deps/sqlx-postgres import PgConnection as postgres-connection, PgStatement as postgres-statement, PgArguments as postgres-arguments, PgRow as postgres-row, PgValue as postgres-value, PgTypeInfo as postgres-type-info
+from /deps/sqlx-postgres import
+    PgConnection as postgres-connection, PgStatement as postgres-statement,
+    PgArguments as postgres-arguments, PgRow as postgres-row,
+    PgValue as postgres-value, PgTypeInfo as postgres-type-info
 
 private function postgres-failure database-error; operation string
     return instance database-error; 'database', operation, 'PostgreSQL operation failed', '', 'postgres'
@@ -14,7 +17,7 @@ private function postgres-failure database-error; operation string
 # Never run it in cancellation finalizers: recovery belongs to a live operation.
 # Use the simple protocol so probes do not enter or depend on the user's
 # prepared-statement cache (including when the application deallocates it).
-private async function postgres-transaction-state int32; native ref postgres-connection
+private async function postgres-transaction-state int32; native mutable ref postgres-connection
     state int32 = rust
         let native = &mut *native;
         use ::sqlx::SqlSafeStr as _;
@@ -52,7 +55,7 @@ private function postgres-row-columns list of string; record ref postgres-row
         terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
     return columns
 
-private function postgres-parameter-type; prepared ref postgres-statement, index int, value ref (postgres-type-info|none)
+private function postgres-parameter-type; prepared ref postgres-statement, index int, value mutable ref (postgres-type-info|none)
     rust
         let value = &mut *value;
         *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Statement::parameters(prepared).and_then(|parameters| parameters.left()).and_then(|types| types.get(index))).cloned();
@@ -62,7 +65,7 @@ private function postgres-type-name string; value ref postgres-type-info
         ::sqlx::TypeInfo::name(value).to_owned()
     return name
 
-private function postgres-read-value; record ref postgres-row, index int, value ref (postgres-value|none)
+private function postgres-read-value; record ref postgres-row, index int, value mutable ref (postgres-value|none)
     rust
         let value = &mut *value;
         *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
@@ -125,7 +128,7 @@ private function postgres-decode-row row; record ref postgres-row, columns list 
 # Encode SQL NULL with the parameter's server-described type, including custom
 # types. A fixed Option<i64> silently supplies the wrong parse type for text/bool.
 # Retire when native dynamic typed-null encoding has a projected public surface.
-private function postgres-bind-null; arguments ref postgres-arguments, expected ref postgres-type-info
+private function postgres-bind-null; arguments mutable ref postgres-arguments, expected ref postgres-type-info
     rust
         let arguments = &mut *arguments;
         struct TypedNull(::sqlx::postgres::PgTypeInfo);
@@ -153,7 +156,7 @@ private function postgres-narrow-real float32; value float64
         throw database-error; 'conversion', 'bind', 'real is outside PostgreSQL REAL range', '', 'postgres'
     return result
 
-private function postgres-bind; arguments ref postgres-arguments, value database-value, expected ref postgres-type-info
+private function postgres-bind; arguments mutable ref postgres-arguments, value database-value, expected ref postgres-type-info
     if value.is-null;
         postgres-bind-null; arguments, expected
         return

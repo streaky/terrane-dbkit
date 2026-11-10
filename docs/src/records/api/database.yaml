@@ -203,6 +203,9 @@ documentation:
             should use `error-details`, not parse that transport themselves.
             `render` produces a human-readable description. `error-details` is
             intended for a caught dbkit error; unrelated payloads are rejected.
+            The helper accepts `error ref throwable`: inspecting details does not
+            consume the original error or its cause, and repeated observations
+            use the same ordinary call syntax.
 
             Stable categories include `driver-unavailable`, `unknown-driver`,
             `configuration`, `sql-syntax`, `parameter-style`, `multiple-statements`,

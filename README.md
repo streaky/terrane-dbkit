@@ -109,7 +109,9 @@ result sets survive closure. A shared connection can be passed to helpers, but
 overlapping operations are rejected as busy rather than run concurrently.
 
 Catch `database-error`, then use `error-details; failure` to read its `code`,
-`operation`, human-readable `detail`, `driver`, and `native-code`. This follows
+`operation`, human-readable `detail`, `driver`, and `native-code`. The helper
+borrows the caught throwable, so it can be inspected repeatedly without consuming
+the original error or its cause. This follows
 HTTP-server's structured throwable pattern because typed catches currently
 expose the base throwable view. Native failures are translated to a sanitized
 `database` category in these structured fields; `native-code` is empty rather
@@ -121,15 +123,16 @@ as sanitized or expose it as a stable structured field contract. See the
 
 ## Verify
 
-With the current optimized compiler at `target/release/terrane`, run:
+With the current `terrane` compiler on `PATH`, run the applicable checks:
 
 ```console
-target/release/terrane test packages/dbkit
-target/release/terrane run packages/dbkit/examples/basic
-python packages/dbkit/tests/test_database.py --terrane target/release/terrane -v
+terrane test packages/dbkit
+terrane run packages/dbkit/examples/basic
+export TERRANE="$(command -v terrane)"
+python packages/dbkit/tests/test_database.py -v
 python packages/dbkit/tests/test_runner.py -v
 packages/dbkit/tests/run_tests.sh -v
-target/release/terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
+terrane run packages/dbkit/examples/http -- 127.0.0.1:3000
 ```
 
 The Python suites use only the standard library. The managed runner additionally

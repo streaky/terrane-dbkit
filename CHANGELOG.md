@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Adopted grouped SQLx imports and indentation-based native query chains in
+  SQLite and PostgreSQL execution paths without changing operation order.
+
+- Updated native argument-buffer helpers for explicit mutable borrowing. Error
+  detail inspection now borrows the caught throwable instead of consuming it,
+  preserving repeated inspection and access to the original cause.
+
 - Added concrete SQLx 0.9 PostgreSQL support through the existing driver-neutral
   connection, statement, value, result and structured-error API. Includes
   PostgreSQL-aware named SQL, typed nulls, checked integer/REAL parameters, strict

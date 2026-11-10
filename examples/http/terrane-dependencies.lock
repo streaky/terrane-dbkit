@@ -1525,7 +1525,6 @@ dependencies = [
  "client-ip",
  "either",
  "equivalent",
- "form_urlencoded",
  "futures-core",
  "http",
  "http-body",

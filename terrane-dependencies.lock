@@ -1187,8 +1187,6 @@ dependencies = [
  "bytes",
  "either",
  "equivalent",
- "form_urlencoded",
- "futures-core",
  "idna",
  "indexmap",
  "libsqlite3-sys",

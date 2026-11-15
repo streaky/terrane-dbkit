@@ -274,7 +274,7 @@ documentation:
           timeout-ms: null
           source: |-
             packages/dbkit/tests/run_tests.sh -v
-            packages/dbkit/tests/run_tests.sh --postgres-only --terrane target/release/terrane -v
+            packages/dbkit/tests/run_tests.sh --postgres-only --terrane "$(command -v terrane)" -v
           response: null
           diagnostic: null
           markdown: null

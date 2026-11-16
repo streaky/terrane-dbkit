@@ -1201,9 +1201,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.154"
+version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
  "itoa",
  "memchr",
@@ -1518,6 +1518,7 @@ dependencies = [
 name = "terrane_dependency_projection"
 version = "0.0.0"
 dependencies = [
+ "allocator-api2",
  "axum",
  "axum-core",
  "bitflags",
@@ -1535,15 +1536,19 @@ dependencies = [
  "ipnet",
  "libsqlite3-sys",
  "log",
+ "memchr",
  "mime",
+ "pin-project-lite",
  "ppv-lite86",
  "serde_core",
+ "serde_json",
  "smallvec",
  "sqlx",
  "sqlx-core",
  "sqlx-postgres",
  "sqlx-sqlite",
  "tokio",
+ "tower",
  "tower-http",
  "tower-layer",
  "tower-service",

@@ -1183,8 +1183,8 @@ dependencies = [
 name = "terrane_dependency_projection"
 version = "0.0.0"
 dependencies = [
+ "allocator-api2",
  "bitflags",
- "bytes",
  "either",
  "equivalent",
  "idna",

@@ -13,9 +13,9 @@ function test-named-parameters-preserve-occurrence-order throws throwable;
     assert-equal-string; plan.names[2], 'first'
 
 function test-literals-identifiers-and-comments-remain-untouched throws throwable;
-    source = 'select \' :single \'\' quote\', " :double "" quote", `:tick``name`, [ :bracket ], :value -- :line ?\n/* :block ? */'
+    source = "select ' :single '' quote', \" :double \"\" quote\", `:tick``name`, [ :bracket ], :value -- :line ?\n/* :block ? */"
     plan = compile-sql; source
-    assert-equal-string; plan.sql, 'select \' :single \'\' quote\', " :double "" quote", `:tick``name`, [ :bracket ], ? -- :line ?\n/* :block ? */'
+    assert-equal-string; plan.sql, "select ' :single '' quote', \" :double \"\" quote\", `:tick``name`, [ :bracket ], ? -- :line ?\n/* :block ? */"
     assert-equal-int; plan.names.length, 1
     assert-equal-string; plan.names[0], 'value'
 
@@ -46,8 +46,8 @@ function test-invalid-and-mixed-parameter-styles-are-rejected throws throwable;
     assert-equal-string; plan.sql, 'select ?-part'
 
 function test-statement-termination-and-unclosed-regions throws throwable;
-    plan = compile-sql; 'select \'a;b\'; -- trailing ;\n/* trailing */'
-    assert-equal-string; plan.sql, 'select \'a;b\'; -- trailing ;\n/* trailing */'
+    plan = compile-sql; "select 'a;b'; -- trailing ;\n/* trailing */"
+    assert-equal-string; plan.sql, "select 'a;b'; -- trailing ;\n/* trailing */"
     assert-sql-rejected; 'multiple-statements', 'select 1; select 2'
     assert-sql-rejected; 'multiple-statements', 'select 1;; -- trailing'
     assert-sql-rejected; 'sql-syntax', 'select \'unterminated'

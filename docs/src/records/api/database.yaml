@@ -171,10 +171,11 @@ documentation:
             owned native handles outside shared-reference guards; guards do not
             span native awaits. Bindings are snapshotted when execution starts.
 
-            Statement wrappers retain private connection storage; dropping the last
+            Statement wrappers retain private connection storage and identify their
+            statement by registry ID; the connection owns the slots. Dropping the last
             public connection reference does not invalidate still-live wrappers.
-            Last-owner destructors roll back abandoned transactions, close
-            registered wrappers, and release connection storage (including its
+            Last-owner destructors roll back abandoned transactions and release the
+            connection's registered slots and native storage (including its
             SQLx statement cache). Explicit connection close invalidates every
             wrapper and closes the native connection. Executing an invalidated
             statement throws `connection-closed`; already buffered results remain

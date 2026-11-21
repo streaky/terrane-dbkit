@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Store prepared statement slots directly in the connection registry instead of
+  allocating a shared slot for each wrapper. Close and cancellation semantics
+  are unchanged; a returning operation cannot recreate a closed slot.
+
 - Adopted grouped SQLx imports and indentation-based native query chains in
   SQLite and PostgreSQL execution paths without changing operation order.
 

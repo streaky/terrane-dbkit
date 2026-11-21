@@ -2,7 +2,7 @@ namespace streaky/dbkit
 
 from /core/collections import
     list, map
-from /core/errors import throwable
+from /core/errors import missing-key, throwable
 from /deps/sqlx-core/query import query_with as native-query
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-sqlite import
@@ -140,47 +140,35 @@ private function bind-native; arguments mutable ref native-arguments, value data
 private class statement-slot
     native native-statement|none = none
     private postgres postgres-statement|none = none
-    private closed bool = false
 
     function construct; native native-statement|none = none, postgres postgres-statement|none = none
         this.native = move native
         this.postgres = move postgres
 
     mutable function take native-statement;
-        if this.closed
-            throw database-error; 'statement-closed', 'statement', 'statement is closed'
         value = move this.native
         if value != none
             return move value
         throw database-error; 'statement-closed', 'statement', 'statement is closed'
 
-    mutable function put; value native-statement
-        if not this.closed
-            this.native = move value
-
     mutable function take-postgres postgres-statement;
-        if this.closed
-            throw database-error; 'statement-closed', 'statement', 'statement is closed', '', 'postgres'
         value = move this.postgres
         if value != none
             return move value
         throw database-error; 'statement-closed', 'statement', 'statement is closed', '', 'postgres'
 
-    mutable function put-postgres; value postgres-statement
-        if not this.closed
-            this.postgres = move value
+    mutable function put; value native-statement
+        this.native = move value
 
-    mutable function close;
-        this.closed = true
-        this.native = none
-        this.postgres = none
+    mutable function put-postgres; value postgres-statement
+        this.postgres = move value
 
 private class database-driver
     private native native-connection|none = none
     private postgres postgres-connection|none = none
     private kind string = 'sqlite'
     private transaction-failed bool = false
-    private statements map of int, shared ref statement-slot
+    private statements map of int, statement-slot
     private next-id int = 0
     private busy bool = false
     private transaction bool = false
@@ -240,14 +228,39 @@ private class database-driver
             this.transaction-known = false
 
 
-    private mutable function register int; slot shared ref statement-slot
+    private mutable function register int; slot statement-slot
         this.next-id = this.next-id + 1
-        this.statements.set; this.next-id, slot
+        this.statements.set; this.next-id, move slot
         return this.next-id
 
     private mutable function unregister; id int
-        if (this.statements.get.checked; id) != none
-            this.statements.remove; id
+        this.statements.remove.checked; id
+
+    private mutable function take-statement native-statement; id int
+        try
+            return (mutable ref this.statements[id]).take;
+        catch missing-key
+            throw database-error; 'statement-closed', 'statement', 'statement is closed'
+
+    private mutable function take-postgres-statement postgres-statement; id int
+        try
+            return (mutable ref this.statements[id]).take-postgres;
+        catch missing-key
+            throw database-error; 'statement-closed', 'statement', 'statement is closed', '', 'postgres'
+
+    # A close can remove the empty slot while an operation owns its statement.
+    # Restore only to an existing slot; never recreate a closed one.
+    private mutable function restore-statement; id int, value native-statement
+        try
+            (mutable ref this.statements[id]).put; move value
+        catch missing-key
+            return
+
+    private mutable function restore-postgres-statement; id int, value postgres-statement
+        try
+            (mutable ref this.statements[id]).put-postgres; move value
+        catch missing-key
+            return
 
     mutable async function prepare shared ref statement; owner shared ref database-driver, source string
         if this.kind == 'postgres'
@@ -267,9 +280,8 @@ private class database-driver
             prepared native-statement = await native.prepare_with; sql, types
             this.transaction = await transaction-state; native
             this.transaction-known = true
-            slot = shared ref (instance statement-slot; move prepared)
-            id = this.register; slot
-            return shared ref (instance statement; owner, slot, id, plan.names)
+            id = this.register; (instance statement-slot; move prepared)
+            return shared ref (instance statement; owner, id, plan.names)
         catch database-error as failure
             throw failure
         catch throwable
@@ -303,9 +315,8 @@ private class database-driver
             await native.clear_cached_statements;
             prepared postgres-statement = await native.prepare_with; sql, types
             await this.refresh-postgres; native
-            slot = shared ref (instance statement-slot; none, move prepared)
-            id = this.register; slot
-            return shared ref (instance statement; owner, slot, id, plan.names)
+            id = this.register; (instance statement-slot; none, move prepared)
+            return shared ref (instance statement; owner, id, plan.names)
         catch database-error as failure
             throw failure
         catch throwable
@@ -403,10 +414,7 @@ private class database-driver
             this.finish-close;
 
     private mutable function finish-close;
-        for id, slot in this.statements
-            slot.close;
-        empty map of int, shared ref statement-slot = map;
-        this.statements = move empty
+        this.statements = map;
         this.native = none
         this.postgres = none
         this.transaction-failed = false
@@ -455,15 +463,13 @@ public class connection
 
 public class statement
     private owner shared ref database-driver
-    private slot shared ref statement-slot
     private id int = 0
     private names list of string
     private bindings map of string, database-value
     private closed bool = false
 
-    private function construct; owner shared ref database-driver, slot shared ref statement-slot, id int, names list of string
+    private function construct; owner shared ref database-driver, id int, names list of string
         this.owner = owner
-        this.slot = slot
         this.id = id
         this.names = move names
 
@@ -508,7 +514,7 @@ public class statement
         owner = this.owner
         native = owner.acquire; 'execute'
         try
-            prepared = this.slot.take;
+            prepared = owner.take-statement; this.id
             try
                 fence-text = 'PRAGMA table_list'
                 fence-sql = checked-sql; fence-text
@@ -531,7 +537,7 @@ public class statement
                 owner.transaction-known = true
                 throw database-failure; 'execute'
             finally
-                this.slot.put; move prepared
+                owner.restore-statement; this.id, move prepared
         finally
             owner.restore; move native
 
@@ -542,7 +548,7 @@ public class statement
         owner = this.owner
         native = owner.acquire; 'query'
         try
-            prepared = this.slot.take;
+            prepared = owner.take-statement; this.id
             try
                 fence-text = 'PRAGMA table_list'
                 fence-sql = checked-sql; fence-text
@@ -577,7 +583,7 @@ public class statement
                 owner.transaction-known = true
                 throw database-failure; 'query'
             finally
-                this.slot.put; move prepared
+                owner.restore-statement; this.id, move prepared
         finally
             owner.restore; move native
 
@@ -614,7 +620,7 @@ public class statement
         owner = this.owner
         native = owner.acquire-postgres; 'execute'
         try
-            prepared = this.slot.take-postgres;
+            prepared = owner.take-postgres-statement; this.id
             try
                 arguments = this.parameters-postgres; prepared
                 sql = postgres-statement-sql; prepared
@@ -630,7 +636,7 @@ public class statement
                 await owner.recover-postgres-state; native
                 throw postgres-failure; 'execute'
             finally
-                this.slot.put-postgres; move prepared
+                owner.restore-postgres-statement; this.id, move prepared
         finally
             owner.restore-postgres; move native
 
@@ -639,7 +645,7 @@ public class statement
         owner = this.owner
         native = owner.acquire-postgres; 'query'
         try
-            prepared = this.slot.take-postgres;
+            prepared = owner.take-postgres-statement; this.id
             try
                 arguments = this.parameters-postgres; prepared
                 sql = postgres-statement-sql; prepared
@@ -662,14 +668,13 @@ public class statement
                 await owner.recover-postgres-state; native
                 throw postgres-failure; 'query'
             finally
-                this.slot.put-postgres; move prepared
+                owner.restore-postgres-statement; this.id, move prepared
         finally
             owner.restore-postgres; move native
 
     mutable function close;
         if this.closed
             return
-        this.slot.close;
         this.owner.unregister; this.id
         this.closed = true
 

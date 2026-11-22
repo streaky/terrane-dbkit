@@ -42,7 +42,7 @@ documentation:
             | `await connection.query; sql` | Prepares, fetches buffered results without parameters, closes the temporary wrapper, and returns `result-set`. |
             | `connection.is-open` | Reports whether the connection is logically open. |
             | `connection.in-transaction` | Reports last verified driver transaction state; false after close, or `transaction-state-unknown` after cancellation until another live operation refreshes it. |
-            | `await connection.close` | Idempotently closes registered wrappers and the native connection; an uncommitted transaction is rolled back on shutdown. |
+            | `await connection.close` | Invalidates its statement wrappers and closes the native connection. Close is idempotent and rolls back any uncommitted transaction on shutdown. |
 
             `mysql` remains reserved but returns `driver-unavailable`;
             other unknown names return `unknown-driver`. There is no fallback.
@@ -70,12 +70,11 @@ documentation:
             `execute` for commands and `query` for statements returning rows;
             affected-row counts follow the selected driver's native semantics.
             `statement.close` is synchronous and idempotent. Binding or executing
-            a closed statement fails; closing it also removes it from its
-            connection's registry. A failed native operation does not automatically
-            close the connection or discard successful bindings.
-            Closing an unrelated wrapper never requires the connection to be idle.
-            A slot closed during its own operation cannot be revived when that
-            operation returns its native metadata.
+            a closed statement fails with `statement-closed`, even if an
+            operation was in progress when it was closed. Closing a statement
+            does not require the connection to be idle. A failed native
+            operation does not automatically close the connection or discard
+            successful bindings.
 
             Preparation calls SQLx's connection-bound `prepare_with`; dbkit owns
             reusable SQL metadata, not an independent native statement handle.
@@ -171,15 +170,15 @@ documentation:
             owned native handles outside shared-reference guards; guards do not
             span native awaits. Bindings are snapshotted when execution starts.
 
-            Statement wrappers retain private connection storage and identify their
-            statement by registry ID; the connection owns the slots. Dropping the last
-            public connection reference does not invalidate still-live wrappers.
-            Last-owner destructors roll back abandoned transactions and release the
-            connection's registered slots and native storage (including its
-            SQLx statement cache). Explicit connection close invalidates every
-            wrapper and closes the native connection. Executing an invalidated
-            statement throws `connection-closed`; already buffered results remain
-            usable. Close and statement destruction are idempotent.
+            Statement wrappers keep their connection's private storage alive.
+            Dropping the last public connection reference does not invalidate
+            still-live wrappers. Last-owner destructors roll back abandoned
+            transactions and release prepared statement metadata and native
+            storage (including the SQLx statement cache). Explicit connection
+            close invalidates every wrapper and closes the native connection.
+            Executing an invalidated statement throws `connection-closed`;
+            already buffered results remain usable. Close and statement
+            destruction are idempotent.
 
             Cancellation finalizers return native connection ownership and release
             leases synchronously; they never await the locked handle. Transaction

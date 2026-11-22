@@ -145,6 +145,7 @@ private class statement-slot
         this.native = move native
         this.postgres = move postgres
 
+    # Lease invariant: the active operation takes a populated slot only once.
     mutable function take native-statement;
         value = move this.native
         if value != none
@@ -236,6 +237,7 @@ private class database-driver
     private mutable function unregister; id int
         this.statements.remove.checked; id
 
+    # Lease invariant: after acquire, an open wrapper must have a registered slot.
     private mutable function take-statement native-statement; id int
         try
             return (mutable ref this.statements[id]).take;
@@ -250,6 +252,7 @@ private class database-driver
 
     # A close can remove the empty slot while an operation owns its statement.
     # Restore only to an existing slot; never recreate a closed one.
+    # Close/cancellation tests cover public behavior; registry non-reinsertion is checked by inspection.
     private mutable function restore-statement; id int, value native-statement
         try
             (mutable ref this.statements[id]).put; move value

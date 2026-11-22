@@ -19,6 +19,15 @@ function test-literals-identifiers-and-comments-remain-untouched throws throwabl
     assert-equal-int; plan.names.length, 1
     assert-equal-string; plan.names[0], 'value'
 
+function test-line-comment-delimiters throws throwable;
+    trailing = compile-sql; 'select 1; -- trailing'
+    assert-equal-string; trailing.sql, 'select 1; -- trailing'
+
+    nested-opener = compile-sql; 'select :value -- /* :ignored ?'
+    assert-equal-string; nested-opener.sql, 'select ? -- /* :ignored ?'
+    assert-equal-int; nested-opener.names.length, 1
+    assert-equal-string; nested-opener.names[0], 'value'
+
 function test-bracket-identifier-ends-at-first-close throws throwable;
     plan = compile-sql; 'SELECT [a]], :p ]'
     assert-equal-string; plan.sql, 'SELECT [a]], ? ]'

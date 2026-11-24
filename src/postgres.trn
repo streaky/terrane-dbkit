@@ -1,6 +1,8 @@
 namespace streaky/dbkit
 
 from /core/collections import list
+from /core/errors import integer-conversion-overflow
+from /deps/sqlx-core import Error as native-sqlx-error
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-postgres import
     PgConnection as postgres-connection, PgStatement as postgres-statement,
@@ -64,12 +66,13 @@ private function postgres-parameter-type; prepared ref postgres-statement, index
 private function postgres-type-name string; value ref postgres-type-info
     return value.name;
 
-# The checked usize ColumnIndex and borrowed raw-cell owned terminal must
-# compose without changing missing-index or decode error policy.
-private function postgres-read-value; record ref postgres-row, index int, value mutable ref (postgres-value|none)
-    rust
-        let value = &mut *value;
-        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
+private function postgres-read-value postgres-value|none; record ref postgres-row, index int
+    try
+        return (record.try_get_raw; index).to_owned;
+    catch integer-conversion-overflow
+        return none
+    catch native-sqlx-error
+        return none
 
 private function postgres-value-kind string; value ref postgres-value
     return (value.type_info;).name;
@@ -113,8 +116,7 @@ private function postgres-decode-row row; record ref postgres-row, columns list 
     cells list of database-value = list;
     index int = 0
     while index < columns.length
-        value postgres-value|none = none
-        postgres-read-value; record, index, value
+        value = postgres-read-value; record, index
         if value != none
             cells.append; (postgres-decode-value; move value)
         else

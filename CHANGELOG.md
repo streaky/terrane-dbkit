@@ -6,6 +6,8 @@
   instead of inline Rust. The strict decoding rules are unchanged.
 - Prepared SQL metadata, PostgreSQL type names, and PostgreSQL REAL
   narrowing now use projected APIs or Terrane numeric operations.
+- SQLite and PostgreSQL raw-cell reads use checked projected ordinals in
+  Terrane, retaining the existing missing-column error behavior.
 
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics

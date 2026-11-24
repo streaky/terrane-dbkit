@@ -256,20 +256,21 @@ documentation:
             facade. Prepared SQL and type names use projected methods in Terrane,
             owning only the returned metadata. PostgreSQL REAL narrowing uses the
             source IEEE narrowing operation and still rejects finite overflow.
+            SQLite and PostgreSQL raw-cell reads use checked native ordinal projection.
+            A missing or unrepresentable index still becomes dbkit's column-not-found
+            error; only the selected native cell becomes owned.
             The remaining typed Rust boundaries are:
 
             - `checked-sql` constructs SQLx's safe SQL wrapper from a source
               string reference.
-            - `statement-columns` and `row-columns` copy native column names;
-              `read-row-value` translates checked ordinal access to optional native
-              values, and `row-value` raises a dbkit error if the access fails.
+            - `statement-columns` and `row-columns` copy native column names.
             - `transaction-state` is an `unsafe rust` bridge: it reads
               `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
               required to inspect SQLite connection state safely. It is used only
               during live operations, never in cancellation finalizers or close.
-            - PostgreSQL column and checked ordinal helpers mirror those narrow
-              owned-value boundaries. Parameter lookup selects the optional
-              borrowed type slice and owns only the indexed type.
+            - PostgreSQL column helpers mirror the borrowed metadata boundary.
+              Parameter lookup selects the optional borrowed type slice and owns
+              only the indexed type.
             - `postgres-bind-null` supplies server-described type information to
               a private SQLx null encoder. Retire it when projected APIs express
               dynamic typed-null encoding.
@@ -280,9 +281,9 @@ documentation:
 
             These boundaries are not a general backend adapter. Retire `checked-sql`
             when projected safe SQL wrapper construction accepts the source reference;
-            column-name and ordinal bridges when borrowed metadata and checked
-            `usize` conversions are expressible; and `transaction-state` when
-            locked-handle autocommit inspection is expressible. SQLx remains the runtime.
+            column-name and parameter bridges when the borrowed slices can be
+            traversed without a snapshot; and `transaction-state` when locked-handle
+            autocommit inspection is expressible. SQLx remains the runtime.
   see-also:
     - dbkit.guide.introduction
     - dbkit.tutorial.basic-database

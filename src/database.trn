@@ -65,9 +65,7 @@ private function row-value native-value; record ref native-row, index int
     throw database-error; 'column-not-found', 'read-value', 'column index is unavailable'
 
 private function value-kind string; value ref native-value
-    kind string = rust
-        ::sqlx::TypeInfo::name(::sqlx::Value::type_info(value).as_ref()).to_owned()
-    return kind
+    return (value.type_info;).name;
 
 # SQLx transaction depth does not track raw BEGIN/COMMIT or implicit SQLite
 # rollback. Inspect the actual connection while its worker is exclusively locked.

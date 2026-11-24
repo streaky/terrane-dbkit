@@ -253,7 +253,9 @@ documentation:
         - type: markdown
           markdown: |-
             dbkit uses SQLx's projected APIs without a handwritten Rust database
-            facade. Its current typed Rust boundaries are:
+            facade. SQLite's `value-kind` calls the projected `type_info` and
+            `name` methods in Terrane, owning only the storage-class name used
+            for strict decoding. The remaining typed Rust boundaries are:
 
             - `checked-sql` constructs SQLx's safe SQL wrapper from a source
               string reference.
@@ -262,8 +264,6 @@ documentation:
             - `statement-columns` and `row-columns` copy native column names;
               `read-row-value` translates checked ordinal access to optional native
               values, and `row-value` raises a dbkit error if the access fails.
-            - `value-kind` copies SQLx's storage-class name used by strict
-              dbkit value decoding.
             - `transaction-state` is an `unsafe rust` bridge: it reads
               `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
               required to inspect SQLite connection state safely. It is used only
@@ -287,9 +287,8 @@ documentation:
             when projected safe SQL wrapper construction accepts the source reference;
             `statement-sql` when owned metadata access expresses the needed value;
             column-name and ordinal bridges when borrowed metadata and checked
-            `usize` conversions are expressible; `value-kind` when the storage-class
-            name is directly accessible; and `transaction-state` when locked-handle
-            autocommit inspection is expressible. SQLx remains the runtime.
+            `usize` conversions are expressible; and `transaction-state` when
+            locked-handle autocommit inspection is expressible. SQLx remains the runtime.
   see-also:
     - dbkit.guide.introduction
     - dbkit.tutorial.basic-database

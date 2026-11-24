@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- SQLite value decoding now reads the SQLx storage-class name in Terrane
+  instead of inline Rust. The strict decoding rules are unchanged.
+
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics
   are unchanged; a returning operation cannot recreate a closed slot.

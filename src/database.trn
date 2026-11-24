@@ -9,7 +9,7 @@ from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-sqlite import
     SqliteConnectOptions as native-options, SqliteConnection as native-connection,
     SqliteStatement as native-statement, SqliteArguments as native-arguments,
-    SqliteRow as native-row, SqliteValue as native-value,
+    SqliteRow as native-row, SqliteColumn as native-column, SqliteValue as native-value,
     SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
 from /deps/sqlx-postgres import
     PgConnectOptions as postgres-options, PgConnection as postgres-connection,
@@ -41,18 +41,14 @@ private function checked-sql native-sql; text ref string
 private function statement-sql native-sql; prepared ref native-statement
     return (prepared.sql;).clone;
 
-# SQLx lends a slice of columns; retain one pass with no intermediate collection
-# until projection can lend that slice and select the concrete Column::name.
-private function statement-columns list of string; prepared ref native-statement
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+private function column-name string; column ref native-column
+    return column.name;
 
-# As with statement metadata, only the column names should become owned.
+private function statement-columns list of string; prepared ref native-statement
+    return (prepared.columns;).map_collect; column-name
+
 private function row-columns list of string; record ref native-row
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (record.columns;).map_collect; column-name
 
 private function read-row-value native-value|none; record ref native-row, index int
     try

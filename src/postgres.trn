@@ -6,7 +6,7 @@ from /deps/sqlx-core import Error as native-sqlx-error
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-postgres import
     PgConnection as postgres-connection, PgStatement as postgres-statement,
-    PgArguments as postgres-arguments, PgRow as postgres-row,
+    PgArguments as postgres-arguments, PgRow as postgres-row, PgColumn as postgres-column,
     PgValue as postgres-value, PgTypeInfo as postgres-type-info
 
 private function postgres-failure database-error; operation string
@@ -43,18 +43,14 @@ private async function postgres-transaction-state int32; native mutable ref post
 private function postgres-statement-sql native-sql; prepared ref postgres-statement
     return (prepared.sql;).clone;
 
-# Projection needs to lend the column slice through iteration and select
-# Column::name on its elements without cloning the slice or statement.
-private function postgres-columns list of string; prepared ref postgres-statement
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+private function postgres-column-name string; column ref postgres-column
+    return column.name;
 
-# Same borrowed column-slice boundary as postgres-columns; only names escape.
+private function postgres-columns list of string; prepared ref postgres-statement
+    return (prepared.columns;).map_collect; postgres-column-name
+
 private function postgres-row-columns list of string; record ref postgres-row
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (record.columns;).map_collect; postgres-column-name
 
 # Preserve optional Either/left selection and checked usize indexing, copying
 # only the selected PgTypeInfo rather than materializing the parameter slice.

@@ -8,6 +8,8 @@
   narrowing now use projected APIs or Terrane numeric operations.
 - SQLite and PostgreSQL raw-cell reads use checked projected ordinals in
   Terrane, retaining the existing missing-column error behavior.
+- SQLite and PostgreSQL collect column names in Terrane, borrowing native
+  statement and row metadata and owning only the names.
 
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics

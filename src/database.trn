@@ -30,28 +30,31 @@ public function available-drivers list of string;
 private function database-failure database-error; operation string
     return instance database-error; 'database', operation, 'SQLite operation failed'
 
-# These typed boundaries adapt borrowed metadata and ordinal native indices only.
-# Retire them when native borrowed terminals and usize arguments are expressible.
+# SQLx's safe-SQL assertion still needs a borrowed string wrapper followed by
+# consuming trait dispatch. The assertion does not sanitize SQL.
 private function checked-sql native-sql; text ref string
     value native-sql = rust
         ::sqlx::SqlSafeStr::into_sql_str(::sqlx::AssertSqlSafe(text.as_str()))
     return value
 
 private function statement-sql native-sql; prepared ref native-statement
-    value native-sql = rust
-        ::sqlx::Statement::sql(prepared).clone()
-    return value
+    return (prepared.sql;).clone;
 
+# SQLx lends a slice of columns; retain one pass with no intermediate collection
+# until projection can lend that slice and select the concrete Column::name.
 private function statement-columns list of string; prepared ref native-statement
     columns list of string = rust
         terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
     return columns
 
+# As with statement metadata, only the column names should become owned.
 private function row-columns list of string; record ref native-row
     columns list of string = rust
         terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
     return columns
 
+# Preserve checked usize indexing and own only the selected cell. This requires
+# the corresponding ColumnIndex implementation and the ValueRef owned terminal.
 private function read-row-value; record ref native-row, index int, value mutable ref (native-value|none)
     rust
         let value = &mut *value;
@@ -69,6 +72,8 @@ private function value-kind string; value ref native-value
 
 # SQLx transaction depth does not track raw BEGIN/COMMIT or implicit SQLite
 # rollback. Inspect the actual connection while its worker is exclusively locked.
+# Retirement requires an awaitable projected handle loan and safe autocommit
+# observation under the lock; transaction_depth is not a substitute.
 private async function transaction-state bool; native mutable ref native-connection
     state int32 = unsafe rust
         let native = &mut *native;

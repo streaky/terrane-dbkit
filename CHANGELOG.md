@@ -4,6 +4,8 @@
 
 - SQLite value decoding now reads the SQLx storage-class name in Terrane
   instead of inline Rust. The strict decoding rules are unchanged.
+- Prepared SQL metadata, PostgreSQL type names, and PostgreSQL REAL
+  narrowing now use projected APIs or Terrane numeric operations.
 
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics

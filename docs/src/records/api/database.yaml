@@ -253,14 +253,13 @@ documentation:
         - type: markdown
           markdown: |-
             dbkit uses SQLx's projected APIs without a handwritten Rust database
-            facade. SQLite's `value-kind` calls the projected `type_info` and
-            `name` methods in Terrane, owning only the storage-class name used
-            for strict decoding. The remaining typed Rust boundaries are:
+            facade. Prepared SQL and type names use projected methods in Terrane,
+            owning only the returned metadata. PostgreSQL REAL narrowing uses the
+            source IEEE narrowing operation and still rejects finite overflow.
+            The remaining typed Rust boundaries are:
 
             - `checked-sql` constructs SQLx's safe SQL wrapper from a source
               string reference.
-            - `statement-sql` obtains owned SQL text from prepared metadata for
-              `query_with`.
             - `statement-columns` and `row-columns` copy native column names;
               `read-row-value` translates checked ordinal access to optional native
               values, and `row-value` raises a dbkit error if the access fails.
@@ -268,16 +267,12 @@ documentation:
               `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
               required to inspect SQLite connection state safely. It is used only
               during live operations, never in cancellation finalizers or close.
-            - PostgreSQL metadata, type-name and checked ordinal helpers mirror
-              those narrow owned-value boundaries. Parameter type lookup uses an
-              explicit optional native out-reference; row/value provenance remains
-              in source data without retaining a connection.
+            - PostgreSQL column and checked ordinal helpers mirror those narrow
+              owned-value boundaries. Parameter lookup selects the optional
+              borrowed type slice and owns only the indexed type.
             - `postgres-bind-null` supplies server-described type information to
               a private SQLx null encoder. Retire it when projected APIs express
               dynamic typed-null encoding.
-            - `postgres-narrow-real` performs checked finite `float64` to `float32`
-              narrowing. Retire it when an equivalent checked native conversion
-              is expressible without losing supported values.
             - `postgres-transaction-state` uses uncached simple-protocol savepoint
               probes because SQLx's exact ReadyForQuery status is private. This is
               extra live-operation I/O, never cancellation-finalizer I/O. Retire
@@ -285,7 +280,6 @@ documentation:
 
             These boundaries are not a general backend adapter. Retire `checked-sql`
             when projected safe SQL wrapper construction accepts the source reference;
-            `statement-sql` when owned metadata access expresses the needed value;
             column-name and ordinal bridges when borrowed metadata and checked
             `usize` conversions are expressible; and `transaction-state` when
             locked-handle autocommit inspection is expressible. SQLx remains the runtime.

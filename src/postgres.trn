@@ -1,10 +1,12 @@
 namespace streaky/dbkit
 
 from /core/collections import list
+from /core/errors import integer-conversion-overflow
+from /deps/sqlx-core import Error as native-sqlx-error
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-postgres import
     PgConnection as postgres-connection, PgStatement as postgres-statement,
-    PgArguments as postgres-arguments, PgRow as postgres-row,
+    PgArguments as postgres-arguments, PgRow as postgres-row, PgColumn as postgres-column,
     PgValue as postgres-value, PgTypeInfo as postgres-type-info
 
 private function postgres-failure database-error; operation string
@@ -37,43 +39,38 @@ private async function postgres-transaction-state int32; native mutable ref post
         throw postgres-failure; 'transaction-state'
     return state
 
-# Borrowed SQLx metadata/usize indices are not yet directly expressible. Each
-# bridge returns owned primitive metadata or a checked optional value, not a DB
-# facade. Retire with projected borrowed slice/ordinal support.
+# Own the returned SQL string, not the prepared statement that lends it.
 private function postgres-statement-sql native-sql; prepared ref postgres-statement
-    value native-sql = rust
-        ::sqlx::Statement::sql(prepared).clone()
-    return value
+    return (prepared.sql;).clone;
+
+private function postgres-column-name string; column ref postgres-column
+    return column.name;
 
 private function postgres-columns list of string; prepared ref postgres-statement
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (prepared.columns;).map_collect; postgres-column-name
 
 private function postgres-row-columns list of string; record ref postgres-row
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (record.columns;).map_collect; postgres-column-name
 
-private function postgres-parameter-type; prepared ref postgres-statement, index int, value mutable ref (postgres-type-info|none)
-    rust
-        let value = &mut *value;
-        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Statement::parameters(prepared).and_then(|parameters| parameters.left()).and_then(|types| types.get(index))).cloned();
+private function postgres-parameter-type postgres-type-info|none; prepared ref postgres-statement, index int
+    ordinal = index.coerce.checked; uint64
+    if ordinal != none
+        return ((prepared.parameters;).select_left;).get_cloned; ordinal
+    return none
 
 private function postgres-type-name string; value ref postgres-type-info
-    name string = rust
-        ::sqlx::TypeInfo::name(value).to_owned()
-    return name
+    return value.name;
 
-private function postgres-read-value; record ref postgres-row, index int, value mutable ref (postgres-value|none)
-    rust
-        let value = &mut *value;
-        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
+private function postgres-read-value postgres-value|none; record ref postgres-row, index int
+    try
+        return (record.try_get_raw; index).to_owned;
+    catch integer-conversion-overflow
+        return none
+    catch native-sqlx-error
+        return none
 
 private function postgres-value-kind string; value ref postgres-value
-    kind string = rust
-        ::sqlx::TypeInfo::name(::sqlx::Value::type_info(value).as_ref()).to_owned()
-    return kind
+    return (value.type_info;).name;
 
 private function postgres-cell database-value; value database-value
     value.postgres-origin = true
@@ -114,8 +111,7 @@ private function postgres-decode-row row; record ref postgres-row, columns list 
     cells list of database-value = list;
     index int = 0
     while index < columns.length
-        value postgres-value|none = none
-        postgres-read-value; record, index, value
+        value = postgres-read-value; record, index
         if value != none
             cells.append; (postgres-decode-value; move value)
         else
@@ -148,11 +144,8 @@ private function postgres-bind-null; arguments mutable ref postgres-arguments, e
         ::sqlx::Arguments::add(arguments, TypedNull(expected.clone())).expect("typed SQL NULL has an infallible encoder");
 
 private function postgres-narrow-real float32; value float64
-    result float32 = rust
-        value as f32
-    valid bool = rust
-        !value.is_finite() || result.is_finite()
-    if not valid
+    result float32 = value.coerce.lossy; float32
+    if value.finite and not result.finite
         throw database-error; 'conversion', 'bind', 'real is outside PostgreSQL REAL range', '', 'postgres'
     return result
 

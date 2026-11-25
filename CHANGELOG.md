@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replaced inline Rust for SQLite and PostgreSQL metadata, raw-cell reads,
+  column names, and parameter-type lookup with projected SQLx calls, and for
+  PostgreSQL REAL narrowing with Terrane numeric operations. Behavior and
+  error policy are unchanged.
+
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics
   are unchanged; a returning operation cannot recreate a closed slot.

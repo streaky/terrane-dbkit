@@ -2,13 +2,14 @@ namespace streaky/dbkit
 
 from /core/collections import
     list, map
-from /core/errors import missing-key, throwable
+from /core/errors import integer-conversion-overflow, missing-key, throwable
+from /deps/sqlx-core import Error as native-sqlx-error
 from /deps/sqlx-core/query import query_with as native-query
 from /deps/sqlx-core/sql-str import SqlStr as native-sql
 from /deps/sqlx-sqlite import
     SqliteConnectOptions as native-options, SqliteConnection as native-connection,
     SqliteStatement as native-statement, SqliteArguments as native-arguments,
-    SqliteRow as native-row, SqliteValue as native-value,
+    SqliteRow as native-row, SqliteColumn as native-column, SqliteValue as native-value,
     SqliteTypeInfo as native-type-info, SqliteQueryResult as native-query-result
 from /deps/sqlx-postgres import
     PgConnectOptions as postgres-options, PgConnection as postgres-connection,
@@ -30,47 +31,46 @@ public function available-drivers list of string;
 private function database-failure database-error; operation string
     return instance database-error; 'database', operation, 'SQLite operation failed'
 
-# These typed boundaries adapt borrowed metadata and ordinal native indices only.
-# Retire them when native borrowed terminals and usize arguments are expressible.
+# SQLx's safe-SQL assertion still needs a borrowed string wrapper followed by
+# consuming trait dispatch. The assertion does not sanitize SQL.
 private function checked-sql native-sql; text ref string
     value native-sql = rust
         ::sqlx::SqlSafeStr::into_sql_str(::sqlx::AssertSqlSafe(text.as_str()))
     return value
 
 private function statement-sql native-sql; prepared ref native-statement
-    value native-sql = rust
-        ::sqlx::Statement::sql(prepared).clone()
-    return value
+    return (prepared.sql;).clone;
+
+private function column-name string; column ref native-column
+    return column.name;
 
 private function statement-columns list of string; prepared ref native-statement
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Statement::columns(prepared).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (prepared.columns;).map_collect; column-name
 
 private function row-columns list of string; record ref native-row
-    columns list of string = rust
-        terrane_collection_support::List::new(::sqlx::Row::columns(record).iter().map(|column| ::sqlx::Column::name(column).to_owned()).collect())
-    return columns
+    return (record.columns;).map_collect; column-name
 
-private function read-row-value; record ref native-row, index int, value mutable ref (native-value|none)
-    rust
-        let value = &mut *value;
-        *value = terrane_int_support::coerce::<usize>(&index).ok().and_then(|index| ::sqlx::Row::try_get_raw(record, index).ok()).map(|value| ::sqlx::ValueRef::to_owned(&value));
+private function read-row-value native-value|none; record ref native-row, index int
+    try
+        return (record.try_get_raw; index).to_owned;
+    catch integer-conversion-overflow
+        return none
+    catch native-sqlx-error
+        return none
 
 private function row-value native-value; record ref native-row, index int
-    value native-value|none = none
-    read-row-value; record, index, value
+    value = read-row-value; record, index
     if value != none
         return move value
     throw database-error; 'column-not-found', 'read-value', 'column index is unavailable'
 
 private function value-kind string; value ref native-value
-    kind string = rust
-        ::sqlx::TypeInfo::name(::sqlx::Value::type_info(value).as_ref()).to_owned()
-    return kind
+    return (value.type_info;).name;
 
 # SQLx transaction depth does not track raw BEGIN/COMMIT or implicit SQLite
 # rollback. Inspect the actual connection while its worker is exclusively locked.
+# Retirement requires an awaitable projected handle loan and safe autocommit
+# observation under the lock; transaction_depth is not a substitute.
 private async function transaction-state bool; native mutable ref native-connection
     state int32 = unsafe rust
         let native = &mut *native;
@@ -597,8 +597,7 @@ public class statement
             for name in this.names
                 value = this.bindings.get.checked; name
                 if value != none
-                    expected postgres-type-info|none = none
-                    postgres-parameter-type; prepared, index, expected
+                    expected = postgres-parameter-type; prepared, index
                     if expected != none
                         postgres-bind; result, value, expected
                     else

@@ -10,6 +10,8 @@
   Terrane, retaining the existing missing-column error behavior.
 - SQLite and PostgreSQL collect column names in Terrane, borrowing native
   statement and row metadata and owning only the names.
+- PostgreSQL parameter-type lookup now uses projected variant selection and
+  checked slice indexing, cloning only the selected type.
 
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics

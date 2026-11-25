@@ -261,6 +261,8 @@ documentation:
             error; only the selected native cell becomes owned.
             Column names are collected in order from the borrowed native slices
             of statements and rows, without copying the slice or its elements.
+            PostgreSQL parameter lookup selects the optional borrowed type
+            slice and owns only the indexed type.
             The remaining typed Rust boundaries are:
 
             - `checked-sql` constructs SQLx's safe SQL wrapper from a source
@@ -269,8 +271,6 @@ documentation:
               `sqlite3_get_autocommit` on the SQLx locked handle. The lock is
               required to inspect SQLite connection state safely. It is used only
               during live operations, never in cancellation finalizers or close.
-            - PostgreSQL parameter lookup selects the optional borrowed type
-              slice and owns only the indexed type.
             - `postgres-bind-null` supplies server-described type information to
               a private SQLx null encoder. Retire it when projected APIs express
               dynamic typed-null encoding.
@@ -280,8 +280,7 @@ documentation:
               it when a supported public accessor provides exact native state.
 
             These boundaries are not a general backend adapter. Retire `checked-sql`
-            when projected safe SQL wrapper construction accepts the source reference;
-            the parameter bridge when its optional native sum can be traversed;
+            when projected safe SQL wrapper construction accepts the source reference,
             and `transaction-state` when locked-handle autocommit inspection is
             expressible. SQLx remains the runtime.
   see-also:

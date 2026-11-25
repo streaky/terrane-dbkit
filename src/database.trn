@@ -597,8 +597,7 @@ public class statement
             for name in this.names
                 value = this.bindings.get.checked; name
                 if value != none
-                    expected postgres-type-info|none = none
-                    postgres-parameter-type; prepared, index, expected
+                    expected = postgres-parameter-type; prepared, index
                     if expected != none
                         postgres-bind; result, value, expected
                     else

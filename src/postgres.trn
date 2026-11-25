@@ -52,11 +52,11 @@ private function postgres-columns list of string; prepared ref postgres-statemen
 private function postgres-row-columns list of string; record ref postgres-row
     return (record.columns;).map_collect; postgres-column-name
 
-private function postgres-parameter-type; prepared ref postgres-statement, index int, value mutable ref (postgres-type-info|none)
+private function postgres-parameter-type postgres-type-info|none; prepared ref postgres-statement, index int
     ordinal = index.coerce.checked; uint64
-    value = none
     if ordinal != none
-        value = ((prepared.parameters;).select_left;).get_cloned; ordinal
+        return ((prepared.parameters;).select_left;).get_cloned; ordinal
+    return none
 
 private function postgres-type-name string; value ref postgres-type-info
     return value.name;

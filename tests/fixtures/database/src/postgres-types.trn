@@ -111,6 +111,20 @@ async function postgres-parameter-types-scenario; dsn string
     else
         throw scenario-failure
     prepared.close;
+    special = await database.prepare; 'SELECT :infinity::REAL, :nan::REAL'
+    zero float64 = 0.0
+    infinity = 1.0 / zero
+    nan = zero / zero
+    special.bind; 'infinity', (real-value; infinity)
+    special.bind; 'nan', (real-value; nan)
+    special-rows = await special.query;
+    special-record = special-rows.fetch;
+    if special-record != none
+        assert-equal-bool; ((special-record.get; 0).as-real;) == infinity, true
+        assert-equal-bool; ((special-record.get; 1).as-real;).not-a-number, true
+    else
+        throw scenario-failure
+    special.close;
     await database.close;
     print; 'postgres-parameter-types=true'
 

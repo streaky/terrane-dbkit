@@ -2,16 +2,10 @@
 
 ## Unreleased
 
-- SQLite value decoding now reads the SQLx storage-class name in Terrane
-  instead of inline Rust. The strict decoding rules are unchanged.
-- Prepared SQL metadata, PostgreSQL type names, and PostgreSQL REAL
-  narrowing now use projected APIs or Terrane numeric operations.
-- SQLite and PostgreSQL raw-cell reads use checked projected ordinals in
-  Terrane, retaining the existing missing-column error behavior.
-- SQLite and PostgreSQL collect column names in Terrane, borrowing native
-  statement and row metadata and owning only the names.
-- PostgreSQL parameter-type lookup now uses projected variant selection and
-  checked slice indexing, cloning only the selected type.
+- Replaced inline Rust for SQLite and PostgreSQL metadata, raw-cell reads,
+  column names, and parameter-type lookup with projected SQLx calls, and for
+  PostgreSQL REAL narrowing with Terrane numeric operations. Behavior and
+  error policy are unchanged.
 
 - Store prepared statement slots directly in the connection registry instead of
   allocating a shared slot for each wrapper. Close and cancellation semantics
